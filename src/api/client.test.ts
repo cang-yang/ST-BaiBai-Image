@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiChannel } from '@/state/settings';
-import { buildRequestBody, extractContent, readSseContent, requestCompletion } from './client';
+import { buildRequestBody, extractContent, readUsage, readSseContent, requestCompletion } from './client';
 
 /** 历史层全部 mock 掉:这里要断的正是「什么时候记成功/失败」 */
 const h = vi.hoisted(() => ({
@@ -51,6 +51,26 @@ const channel: ApiChannel = {
   reasoningEffort: '',
 };
 const messages = [{ role: 'user' as const, content: 'hi' }];
+
+describe('readUsage: upstream cache counters', () => {
+  it('reads DeepSeek cache hits without treating cache writes as hits', () => {
+    expect(readUsage({ usage: { prompt_tokens: 1000, completion_tokens: 20,
+      prompt_cache_hit_tokens: 800, prompt_cache_miss_tokens: 200,
+      cache_creation_input_tokens: 200 } })).toEqual({ prompt: 1000, completion: 20, cached: 800 });
+  });
+  it('reads compatible nested cached_tokens and preserves an explicit zero', () => {
+    expect(readUsage({ usage: { prompt_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 0 } } }).cached).toBe(0);
+    expect(readUsage({ usage: { prompt_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 70 } } }).cached).toBe(70);
+  });
+  it('does not infer cache hits from missing or invalid counters', () => {
+    for (const value of [undefined, null, '80', -1, 1.5, NaN, Infinity, 101]) {
+      expect(readUsage({ usage: { prompt_tokens: 100, prompt_cache_hit_tokens: value } }).cached).toBeNull();
+    }
+    expect(readUsage({}).cached).toBeNull();
+  });
+});
 /** 带 usage 的响应:避免触发 token 估算分支(那需要主界面分词器) */
 const okPayload = {
   choices: [{ message: { role: 'assistant', content: '  答案文本  ' } }],

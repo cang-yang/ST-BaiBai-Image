@@ -1,0 +1,418 @@
+<script setup lang="ts">
+import { computed, nextTick, ref } from 'vue';
+import { settings } from '@/state/settings';
+import MangaLayoutEditor from '@/pages/settings/MangaLayoutEditor.vue';
+import {
+  parseCustomLayout,
+  builtinIds,
+  type MangaSettings,
+  resolveLayouts,
+  type MangaCustomLayout,
+  type MangaOrientation,
+  canvasOf,
+  orientationOf,
+} from '@/manga/layouts';
+
+const ORIENTATIONS: MangaOrientation[] = ['portrait', 'landscape'];
+
+const draft = ref('');
+const editing = ref('');
+const error = ref('');
+const note = ref('');
+const quickOpen = ref(false);
+const quickSource = ref('');
+const quickEditingId = ref('');
+const quickSources = computed(() => ORIENTATIONS.flatMap(orientation => resolveLayouts({ ...settings.manga, disabled: [] }, orientation).map(layout => ({ ...layout, key: `${layout.id}:${orientation}` }))));
+const existingIds = computed(() => [...new Set([...ORIENTATIONS.flatMap(builtinIds), ...settings.manga.custom.map(layout => layout.id)])]);
+function openQuick(id?: string): void {
+  quickEditingId.value = id ?? '';
+  quickSource.value = id ? quickSources.value.find(source => source.id === id)?.key ?? '' : '';
+  quickOpen.value = true;
+}
+function saveQuick(layout: MangaCustomLayout): void {
+  if (existingIds.value.includes(layout.id) && layout.id !== quickEditingId.value) return;
+  const index = settings.manga.custom.findIndex(entry => entry.id === layout.id);
+  if (layout.id === quickEditingId.value) {
+    const standard = canvasOf(orientationOf(layout.canvas?.width, layout.canvas?.height));
+    // Standard sizes need no global canvas override; retain the other orientation.
+    const standardSize = layout.canvas?.width === standard.width && layout.canvas.height === standard.height;
+    layout = { ...(index >= 0 ? settings.manga.custom[index] : {}), ...layout };
+    if (standardSize) delete layout.canvas;
+  }
+  if (index >= 0) settings.manga.custom.splice(index, 1, layout);
+  else settings.manga.custom.push(layout);
+  note.value = `已保存 ${layout.label ?? layout.id}`;
+  quickOpen.value = false;
+}
+
+interface Row {
+  id: string;
+  label: string;
+  usage: string;
+  portrait: number;
+  landscape: number;
+  custom: boolean;
+  disabled: boolean;
+}
+
+/** 管理列表要看全部版式(含停用),所以传一份 disabled 为空的探针设置进 resolveLayouts。 */
+const rows = computed<Row[]>(() => {
+  const probe: MangaSettings = { ...settings.manga, disabled: [] };
+  const byId = new Map<string, Row>();
+  const order: string[] = [];
+  for (const orientation of ORIENTATIONS) {
+    for (const layout of resolveLayouts(probe, orientation)) {
+      if (!byId.has(layout.id)) {
+        byId.set(layout.id, {
+          id: layout.id,
+          label: layout.label,
+          usage: layout.usage ?? '',
+          portrait: 0,
+          landscape: 0,
+          custom: settings.manga.custom.some(entry => entry.id === layout.id),
+          disabled: false,
+        });
+        order.push(layout.id);
+      }
+      const row = byId.get(layout.id)!;
+      if (orientation === 'portrait') row.portrait = layout.panels.length;
+      else row.landscape = layout.panels.length;
+    }
+  }
+  return order.map(id => ({ ...byId.get(id)!, disabled: settings.manga.disabled.includes(id) }));
+});
+
+const activeCount = computed(() => rows.value.filter(row => !row.disabled).length);
+const builtins = new Set(ORIENTATIONS.flatMap(builtinIds));
+
+function onUsageChange(id: string, event: Event): void {
+  const target = event.target as HTMLInputElement | null;
+  if (!target) return;
+  setUsage(id, target.value);
+}
+
+/** 只改用途串：没有覆盖条目就新建一条，坐标仍走内置表。 */
+function setUsage(id: string, value: string): void {
+  const trimmed = value.trim();
+  const index = settings.manga.custom.findIndex(entry => entry.id === id);
+  if (index >= 0) {
+    const entry = settings.manga.custom[index];
+    if (trimmed) entry.usage = trimmed;
+    else delete entry.usage;
+    if (!entry.usage && !entry.label && !entry.readingOrder && !entry.portrait && !entry.landscape) {
+      settings.manga.custom.splice(index, 1);
+    }
+    return;
+  }
+  if (!trimmed) return;
+  settings.manga.custom.push({ id, usage: trimmed });
+}
+
+function toggleDisabled(id: string): void {
+  const list = settings.manga.disabled;
+  const index = list.indexOf(id);
+  if (index >= 0) list.splice(index, 1);
+  else list.push(id);
+}
+
+function layoutJson(id: string): string {
+  const existing = settings.manga.custom.find(entry => entry.id === id);
+  const body: Record<string, unknown> = { id };
+  for (const orientation of ORIENTATIONS) {
+    const probe: MangaSettings = { ...settings.manga, enabled: true, disabled: [] };
+    const layout = resolveLayouts(probe, orientation).find(item => item.id === id);
+    if (!layout) continue;
+    body[orientation] = layout.panels;
+    body.usage = layout.usage;
+    body.readingOrder = layout.readingOrder;
+  }
+  body.label = rows.value.find(row => row.id === id)?.label ?? id;
+  if (existing) Object.assign(body, existing);
+  return JSON.stringify(body, null, 2);
+}
+
+function startEdit(id: string): void {
+  error.value = '';
+  note.value = '';
+  editing.value = id;
+  draft.value = layoutJson(id);
+  void nextTick(() => {
+    document.getElementById(`bbi-manga-editor-${id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
+}
+
+function startNew(): void {
+  error.value = '';
+  note.value = '';
+  editing.value = '__new__';
+  draft.value = JSON.stringify(
+    {
+      id: 'my_layout',
+      label: '自定义版式',
+      usage: '这套版式适合什么节拍',
+      readingOrder: '上到下',
+      portrait: [
+        {
+          position: 'single',
+          slots: { F: [-924, -504, 924, 504], C: [-908, -488, 908, 488], T: [-906, -486, -555, 486] },
+        },
+      ],
+    },
+    null,
+    2,
+  );
+}
+
+function cancel(): void {
+  editing.value = '';
+  draft.value = '';
+  error.value = '';
+}
+
+function save(): void {
+  error.value = '';
+  note.value = '';
+  let parsed: MangaCustomLayout;
+  try {
+    parsed = parseCustomLayout(draft.value);
+  } catch (issue) {
+    error.value = issue instanceof Error ? issue.message : String(issue);
+    return;
+  }
+  const index = settings.manga.custom.findIndex(entry => entry.id === parsed.id);
+  if (index >= 0) settings.manga.custom.splice(index, 1, parsed);
+  else settings.manga.custom.push(parsed);
+  const enabled = settings.manga.disabled.indexOf(parsed.id);
+  if (enabled >= 0) settings.manga.disabled.splice(enabled, 1);
+  const deleted = settings.manga.deleted.indexOf(parsed.id);
+  if (deleted >= 0) settings.manga.deleted.splice(deleted, 1);
+  note.value = `已保存 ${parsed.id}`;
+  editing.value = '';
+  draft.value = '';
+}
+
+function removeCustom(id: string): void {
+  const index = settings.manga.custom.findIndex(entry => entry.id === id);
+  if (index >= 0) settings.manga.custom.splice(index, 1);
+  const disabled = settings.manga.disabled.indexOf(id);
+  if (disabled >= 0) settings.manga.disabled.splice(disabled, 1);
+  if (editing.value === id) cancel();
+}
+
+function deleteLayout(id: string): void {
+  if (builtins.has(id)) {
+    if (!settings.manga.deleted.includes(id)) settings.manga.deleted.push(id);
+    if (editing.value === id) cancel();
+    note.value = `已删除 ${id}，可使用“恢复已删除的默认版式”找回。`;
+  } else removeCustom(id);
+}
+
+function restoreDeleted(): void {
+  settings.manga.deleted = [];
+  note.value = '已恢复删除的默认版式，原有用途说明与启用状态保留。';
+}
+
+function resetBuiltin(id: string): void {
+  removeCustom(id);
+  note.value = `已恢复内置 ${id}`;
+}
+</script>
+
+<template>
+  <div class="bbi-manga">
+    <label class="bbi-manga-row">
+      <input v-model="settings.manga.enabled" type="checkbox" class="bbi-checkbox" />
+      <span>启用漫画 Layout（模型只写版式与槽位，坐标由插件查表注入）</span>
+    </label>
+    <p class="bbi-manga-hint">
+      关闭时完全走原本的生图配置：不追加漫画协议，也不改写提示词里的坐标。启用后提示词只带版式清单，
+      不再带坐标表——新版式加进这里，下一次请求就会出现在清单里，不需要改提示词。
+    </p>
+    <p class="bbi-manga-hint">当前可用版式 {{ activeCount }} / {{ rows.length }}。</p>
+    <button v-if="settings.manga.deleted.length" type="button" class="bbi-manga-btn" @click="restoreDeleted">恢复已删除的默认版式（{{ settings.manga.deleted.length }}）</button>
+
+    <div class="bbi-manga-editor">
+      <p class="bbi-manga-hint">
+        漫画规范：只在开关打开时生效，留空则沿用「自动生成 tag」里的后端规范框。版式清单由插件自动接在它后面，这里不要写坐标。
+      </p>
+      <textarea v-model="settings.manga.spec" class="bbi-input bbi-manga-code" spellcheck="false" placeholder="粘贴漫画 1080p 规范全文"></textarea>
+      <p class="bbi-manga-hint">
+        漫画检查指导：同样只在开关打开时生效，留空则沿用常规思考清单（或插件内置的 Layout 默认）。
+      </p>
+      <textarea v-model="settings.manga.thinking" class="bbi-input bbi-manga-notes" spellcheck="false" placeholder="粘贴输出前检查指导全文"></textarea>
+    </div>
+
+    <div class="bbi-manga-row">
+      <label for="bbi-manga-bleed">出框基准（px）</label>
+      <input
+        id="bbi-manga-bleed"
+        class="bbi-input bbi-manga-bleed"
+        type="number"
+        min="16"
+        max="160"
+        step="4"
+        v-model.number="settings.manga.bleed"
+      />
+      <span class="bbi-manga-meta">2 格 ×1.25 · 3 格 ×1 · 4 格 ×0.8 · 5 格以上 ×0.6</span>
+    </div>
+
+    <div class="bbi-manga-editor">
+      <p class="bbi-manga-hint">
+        版式选择说明：整段拼入提示词末尾，用来补充说明你想要选择的版式。
+      </p>
+      <textarea v-model="settings.manga.selectionNotes" class="bbi-input bbi-manga-notes" spellcheck="false" placeholder="留空则只输出插件生成的清单"></textarea>
+    </div>
+
+    <div v-for="row in rows" :key="row.id" class="bbi-manga-item">
+      <div class="bbi-manga-item-head">
+        <code>{{ row.id }}</code>
+        <span class="bbi-manga-label">{{ row.label }}</span>
+        <span class="bbi-manga-meta">竖 {{ row.portrait }} 格 · 横 {{ row.landscape }} 格{{ row.custom ? ' · 自定义' : '' }}</span>
+        <span v-if="settings.manga.custom.find(item => item.id === row.id)?.canvas" class="bbi-manga-meta">{{ settings.manga.custom.find(item => item.id === row.id)?.canvas?.width }}×{{ settings.manga.custom.find(item => item.id === row.id)?.canvas?.height }}</span>
+      </div>
+      <input
+        class="bbi-input bbi-manga-usage"
+        :value="row.usage"
+        :placeholder="'这套版式适合什么节拍（留空则模型只能靠格数猜）'"
+        @change="onUsageChange(row.id, $event)"
+      />
+      <div class="bbi-manga-item-actions">
+        <label class="bbi-manga-mini">
+          <input type="checkbox" class="bbi-checkbox" :checked="!row.disabled" @change="toggleDisabled(row.id)" />
+          启用
+        </label>
+        <button
+          type="button"
+          class="bbi-manga-btn"
+          @click="editing === row.id ? cancel() : startEdit(row.id)"
+        >
+          {{ editing === row.id ? '收起' : row.custom ? '编辑 / 覆盖' : '改写为自定义' }}
+        </button>
+        <button type="button" class="bbi-manga-btn" @click="openQuick(row.id)">可视化编辑</button>
+        <button v-if="row.custom && builtins.has(row.id)" type="button" class="bbi-manga-btn" @click="resetBuiltin(row.id)">恢复内置</button>
+        <button type="button" class="bbi-manga-btn" @click="deleteLayout(row.id)">删除</button>
+      </div>
+
+      <div v-if="editing === row.id" :id="`bbi-manga-editor-${row.id}`" class="bbi-manga-editor">
+        <textarea v-model="draft" class="bbi-input bbi-manga-code" spellcheck="false"></textarea>
+        <div class="bbi-manga-item-actions">
+          <button type="button" class="bbi-manga-btn" @click="save">保存</button>
+          <button type="button" class="bbi-manga-btn" @click="cancel">取消</button>
+        </div>
+        <p v-if="error" class="bbi-manga-error">{{ error }}</p>
+      </div>
+    </div>
+
+    <div class="bbi-manga-item-actions">
+      <button type="button" class="bbi-manga-btn" @click="openQuick()">快捷自定义</button>
+      <button type="button" class="bbi-manga-btn" @click="startNew">新增版式（JSON）</button>
+    </div>
+    <p v-if="note" class="bbi-manga-hint" role="status">{{ note }}</p>
+    <MangaLayoutEditor v-if="quickOpen" :sources="quickSources" :existing-ids="existingIds" :initial-key="quickSource" :editing-id="quickEditingId" @close="quickOpen=false" @save="saveQuick" />
+
+    <div v-if="editing === '__new__'" class="bbi-manga-editor">
+      <p class="bbi-manga-hint">
+        版式 JSON：<code>id</code> 与内置同名即覆盖，新名字即追加；<code>portrait</code> / <code>landscape</code>
+        各自是「格数组」，每格 <code>position</code> 为位置代号、<code>slots</code> 为槽位到
+        <code>[y_min, x_min, y_max, x_max]</code> 的映射。坐标用 1088×1920 或 1920×1088 的内部画布，
+        已编译成以画布中心为原点的整数。自定义尺寸可添加 canvas: { width, height }，宽高为 64～8192 的偶数，并只填写对应方向。
+      </p>
+      <textarea v-model="draft" class="bbi-input bbi-manga-code" spellcheck="false"></textarea>
+      <div class="bbi-manga-item-actions">
+        <button type="button" class="bbi-manga-btn" @click="save">保存</button>
+        <button type="button" class="bbi-manga-btn" @click="cancel">取消</button>
+      </div>
+      <p v-if="error" class="bbi-manga-error">{{ error }}</p>
+    </div>
+
+    <p v-if="note" class="bbi-manga-hint">{{ note }}</p>
+  </div>
+</template>
+
+<style scoped>
+.bbi-manga {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bbi-manga-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.bbi-manga-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.72;
+}
+.bbi-manga-error {
+  margin: 0;
+  font-size: 12px;
+  color: #b3261e;
+}
+.bbi-manga-item {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bbi-manga-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.bbi-manga-item-head code,
+.bbi-manga-label {
+  font-size: 13px;
+}
+.bbi-manga-meta {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.bbi-manga-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.bbi-manga-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.bbi-manga-btn {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: transparent;
+  cursor: pointer;
+}
+.bbi-manga-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bbi-manga-usage {
+  font-size: 12px;
+}
+.bbi-manga-notes {
+  min-height: 96px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.bbi-manga-code {
+  min-height: 220px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+</style>

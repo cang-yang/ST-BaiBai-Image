@@ -59,6 +59,8 @@ export interface LlmRecord extends BaseRecord {
   response: string;
   promptTokens: number | null;
   completionTokens: number | null;
+  /** 上游报告的缓存读取 token；未报告时为 null，不能当成零命中。 */
+  cacheReadTokens: number | null;
   /**
    * token 数是否为本地估算。
    * 真值只在「自建渠道 + 非流式」时拿得到(ST 代理原样透传上游 usage);
@@ -176,6 +178,7 @@ export function beginLlm(info: LlmBegin): number {
     response: '',
     promptTokens: null,
     completionTokens: null,
+    cacheReadTokens: null,
     tokensEstimated: false,
   });
   return id;
@@ -185,6 +188,7 @@ export interface LlmFinish {
   response: string;
   promptTokens: number | null;
   completionTokens: number | null;
+  cacheReadTokens?: number | null;
   tokensEstimated: boolean;
 }
 
@@ -196,7 +200,17 @@ export function finishLlm(id: number, info: LlmFinish): void {
   record.response = truncate(info.response);
   record.promptTokens = info.promptTokens;
   record.completionTokens = info.completionTokens;
+  record.cacheReadTokens = info.cacheReadTokens ?? null;
   record.tokensEstimated = info.tokensEstimated;
+}
+
+/** 只用上游真实输入与缓存数计算；估算、缺失、空输入和异常数据均不计算。 */
+export function cacheHitRate(record: Pick<LlmRecord, 'promptTokens' | 'cacheReadTokens' | 'tokensEstimated'>): number | null {
+  const { promptTokens: prompt, cacheReadTokens: cached } = record;
+  if (record.tokensEstimated || prompt === null || cached === null ||
+      !Number.isSafeInteger(prompt) || !Number.isSafeInteger(cached) ||
+      prompt <= 0 || cached < 0 || cached > prompt) return null;
+  return cached / prompt * 100;
 }
 
 /**

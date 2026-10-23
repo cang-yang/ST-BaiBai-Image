@@ -30,6 +30,7 @@ import { effectiveOrientation, parseSize, pickSize, type Orientation } from '@/b
 import { acquireNaiSlot } from '@/floor/genQueue';
 import type { GenerationMeta } from '@/generationMeta';
 import { activeComfyPreset, activeNaiEndpoint, activeOrientationLock, effectiveComfyConn, effectiveNai, settings, type BackendId } from '@/state/settings';
+import { applyMangaFrames } from '@/manga/layouts';
 
 /** 一次生成的输入。与协议层 ImageInsertion 同形,但不含正文位置信息。 */
 export interface GenerateInput {
@@ -209,11 +210,14 @@ export async function generateImage(
       meta = { backend: 'nai', model: status.model, ...output.usage };
     } else {
       const conn = effectiveComfyConn();
+      // 漫画 Layout:模型只写 panel/slot,这里按当前画布查表换成整数框;关闭漫画模式时原样返回。
+      const mangaPrompt = applyMangaFrames(input.prompt, settings.manga, parseSize(pickSize(conn, size)));
+      const mangaNl = mangaPrompt !== input.prompt ? '' : input.nl ?? '';
       result = await generateComfyImage(
         conn,
         {
-          prompt: input.prompt,
-          nl: input.nl ?? '',
+          prompt: mangaPrompt,
+          nl: mangaNl,
           negative_prompt: input.negative ?? '',
           seed: input.seed,
           size,
@@ -227,8 +231,8 @@ export async function generateImage(
       const width = px?.width ?? 0;
       const height = px?.height ?? 0;
       const simpleValues: SimpleGenValues = {
-        prompt: input.prompt,
-        nl: input.nl,
+        prompt: mangaPrompt,
+        nl: mangaNl,
         negative: input.negative,
         seed: input.seed,
         width,

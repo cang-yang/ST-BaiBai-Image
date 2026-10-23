@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { autoTagProfile, buildAutoTagMessages, expandNlSections } from '@/autoTag/prompt';
+import * as promptContext from '@/autoTag/context';
+
+import { autoTagProfile, buildAutoTagMessages, expandNlSections, usesMossLayout } from '@/autoTag/prompt';
 import {
   activeComfyPreset,
   DEFAULT_NAI_V5_SPEC,
@@ -10,6 +12,7 @@ import {
   type AutoTagSettings,
 } from '@/state/settings';
 import type { STContext } from '@/st/context';
+import { applyMangaFrames, mangaDefaults } from '@/manga/layouts';
 
 /**
  * 提示词集:全部留空(= 回落内置默认),只把本用例关心的那几项覆盖掉。
@@ -58,6 +61,146 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
+  it('协议示例只选启用版式，不引用已删除的 balanced_1，空清单时阻止请求',async()=>{
+    const oldBackend=settings.defaultBackend, oldManga=settings.manga;
+    const options:AutoTagSettings={enabled:true,contextMessages:2,minImages:0,maxImages:3,retryCount:1,autoGenerate:true,prompts:prompts({jailbreak:'TEST_PREFIX'})};
+    try {
+      settings.defaultBackend='comfyui';
+      const deleted=(await import('@/manga/layouts')).builtinIds('portrait');
+      settings.manga={...mangaDefaults(),enabled:true,deleted,custom:[{id:'only_enabled',canvas:{width:1088,height:1920},portrait:[{position:'one',slots:{F:[-900,-500,900,500]}}]}]};
+      const messages=await buildAutoTagMessages(context(),1,options,null);
+      const contract=messages.find(m=>m.content.startsWith('你是严谨的'))!.content;
+      const example=JSON.parse(contract.match(/格式固定为：\n([^\n]+)\n/)![1]);
+      expect(JSON.parse(example.images[0].tag)).toMatchObject({layout:'only_enabled',items:[{panel:1,slot:'F'}]});
+      expect(contract).not.toContain('balanced_1');
+      settings.manga.custom=[];
+      await expect(buildAutoTagMessages(context(),1,options,null)).rejects.toThrow(/没有启用的版式/);
+    }finally{settings.defaultBackend=oldBackend;settings.manga=oldManga;}
+  });
+  it('漫画关闭时忽略漫画专用规范，开启后输出可编译的符号示例', async () => {
+    const oldBackend = settings.defaultBackend;
+    const oldManga = settings.manga;
+    const options: AutoTagSettings = {
+      enabled: true, contextMessages: 2, minImages: 0, maxImages: 3,
+      retryCount: 1, autoGenerate: true,
+      prompts: prompts({ jailbreak: 'TEST_PREFIX', comfySpec: '[BBI_FORMAT:MOSS_LAYOUT]\nREGULAR_RULES', comfyThinking: 'REGULAR_CHECK' }),
+    };
+    try {
+      settings.defaultBackend = 'comfyui';
+      settings.manga = { ...mangaDefaults(), spec: 'MANGA_RULES {{nl}}', thinking: 'MANGA_CHECK' };
+      const off = (await buildAutoTagMessages(context(), 1, options, null)).map(m => m.content).join('\n');
+      expect(off).toContain('REGULAR_RULES');
+      expect(off).toContain('REGULAR_CHECK');
+      expect(off).not.toContain('MANGA_RULES');
+      expect(off).not.toContain('MANGA_CHECK');
+      settings.manga.enabled = true;
+      const on = await buildAutoTagMessages(context(), 1, options, null);
+      expect(on.map(m => m.content).join('\n')).toContain('MANGA_CHECK');
+      expect(on.map(m => m.content).join('\n')).not.toContain('{{nl}}');
+      const contract = on.find(m => m.content.startsWith('你是严谨的'))!.content;
+      const sample = JSON.parse(contract.match(/格式固定为：\n([^\n]+)\n/)![1]);
+      const tag = sample.images[0].tag;
+      expect(JSON.parse(tag)).toMatchObject({ layout: 'balanced_1', items: [{ panel: 1, slot: 'C' }] });
+      expect(JSON.parse(applyMangaFrames(tag, settings.manga, { width: 1088, height: 1920 })).items[0].bbox).toHaveLength(4);
+    } finally {
+      settings.defaultBackend = oldBackend;
+      settings.manga = oldManga;
+    }
+  });
+  it('selects Layout only with the explicit marker and emits a matching nested JSON example', async () => {
+    const oldBackend = settings.defaultBackend;
+    const oldNl = activeComfyPreset().naturalLanguage;
+    const preset = activeComfyPreset();
+    try {
+      settings.defaultBackend = 'comfyui';
+      preset.naturalLanguage = true;
+      expect(usesMossLayout('Discuss Layout and tag fields.')).toBe(false);
+      const options: AutoTagSettings = {
+        enabled: true, contextMessages: 2, minImages: 0, maxImages: 3,
+        retryCount: 1, autoGenerate: true,
+        prompts: prompts({ jailbreak: 'TEST_PREFIX',
+          comfySpec: '[BBI_FORMAT:MOSS_LAYOUT]\nMOSS_RULES {{nl}}' }),
+      };
+      const messages = await buildAutoTagMessages(context(), 1, options, null);
+      const spec = messages.find(m => m.content.includes('MOSS_RULES'))!.content;
+      expect(spec).not.toContain('[BBI_FORMAT:MOSS_LAYOUT]');
+      expect(spec).not.toContain('{{nl}}');
+      expect(spec.trim()).toBe('MOSS_RULES');
+      const contract = messages.find(m => m.content.startsWith('你是严谨的'))!.content;
+      expect(contract).toContain('MOSS Layout 模式');
+      expect(contract).not.toContain('tag 是 danbooru 短 tag');
+      expect(contract).not.toContain('同一张图里这套外貌只写一遍');
+      expect(contract).toContain('跨格重现必须分别绑定可见身份锚点');
+      expect(contract).toContain('同页各格允许按原文推进动作');
+      const sample = JSON.parse(contract.match(/格式固定为：\n([^\n]+)\n/)![1]);
+      expect(sample.images[0].nl).toBe('');
+      const inner = JSON.parse(sample.images[0].tag);
+      expect(inner.bbox_format).toBe('yxyx');
+      expect(inner.bbox_coord_space).toBe('abs_centralized');
+      expect(inner.items[0].label).toBe('character');
+      expect(messages.some(m => m.content.includes('tag 为完整 Layout JSON 字符串，nl 留空'))).toBe(true);
+    } finally {
+      settings.defaultBackend = oldBackend;
+      preset.naturalLanguage = oldNl;
+    }
+  });
+
+  it('snapshots Layout mode and disables the ordinary nl profile without changing the preset toggle', () => {
+    const oldBackend = settings.defaultBackend;
+    const oldSpec = settings.autoTag.prompts.comfySpec;
+    const preset = activeComfyPreset();
+    const oldNl = preset.naturalLanguage;
+    try {
+      settings.defaultBackend = 'comfyui';
+      preset.naturalLanguage = true;
+      settings.autoTag.prompts.comfySpec = '[BBI_FORMAT:MOSS_LAYOUT]';
+      expect(autoTagProfile()).toMatchObject({ layout: true, nl: false, naiCharPrompts: false });
+      expect(preset.naturalLanguage).toBe(true);
+      settings.defaultBackend = 'nai';
+      expect(autoTagProfile().layout).toBeUndefined();
+    } finally {
+      settings.defaultBackend = oldBackend;
+      settings.autoTag.prompts.comfySpec = oldSpec;
+      preset.naturalLanguage = oldNl;
+    }
+  });
+
+  it('keeps backend rules in a stable prefix when activated world info changes', async () => {
+    const originalBackend = settings.defaultBackend;
+    settings.defaultBackend = 'comfyui';
+    const card = vi.spyOn(promptContext, 'fetchCharCard').mockReturnValue('CARD_MARKER');
+    const persona = vi.spyOn(promptContext, 'fetchUserPersona').mockReturnValue('PERSONA_MARKER');
+    const world = vi.spyOn(promptContext, 'fetchWorldInfo').mockResolvedValue('WORLD_A');
+    try {
+      const options: AutoTagSettings = {
+        enabled: true, contextMessages: 2, minImages: 0, maxImages: 3,
+        retryCount: 1, autoGenerate: true,
+        prompts: prompts({
+          jailbreak: 'PREFIX_MARKER', comfySpec: 'SPEC_MARKER',
+          comfyThinking: 'CHECK_MARKER',
+        }),
+      };
+      const first = await buildAutoTagMessages(context(), 1, options, null);
+      world.mockResolvedValue('WORLD_B');
+      const second = await buildAutoTagMessages(context(), 1, options, null);
+      expect(first.slice(0, 4)).toEqual(second.slice(0, 4));
+      expect(first.slice(0, 4).map(m => m.role)).toEqual(['system', 'system', 'system', 'system']);
+      expect(first[0].content).toBe('PREFIX_MARKER');
+      expect(first[1].content).toContain('SPEC_MARKER');
+      expect(first[2].content).toContain('你是严谨的剧情画面规划与生图提示词编写员');
+      expect(first[3].content).toContain('CHECK_MARKER');
+      expect(first[4].content).toContain('CARD_MARKER');
+      expect(first[5].content).toContain('PERSONA_MARKER');
+      expect(first[6].content).toContain('WORLD_A');
+      expect(second[6].content).toContain('WORLD_B');
+      expect(first.at(-1)?.role).toBe('user');
+      expect(first.at(-1)?.content).toContain('目标第一行');
+    } finally {
+      card.mockRestore(); persona.mockRestore(); world.mockRestore();
+      settings.defaultBackend = originalBackend;
+    }
+  });
+
   it('marks only clean target paragraphs without pulling user messages before the earliest selected AI floor', async () => {
     const options: AutoTagSettings = {
       enabled: true,
@@ -387,6 +530,7 @@ describe('auto tag prompt', () => {
       // negative 键);Comfy spec 无 NSFW 条款,思维链也不加。
       settings.defaultBackend = 'comfyui';
       let text = (await buildAutoTagMessages(context(), 1, options, null))
+        .slice(1) // 本测试只检查后端规则，独立核心提示不属于该断言范围。
         .map(m => m.content)
         .join('\n');
       expect(text).toContain('判定为同人时同一行定出最终身份 tag 词');
@@ -409,6 +553,7 @@ describe('auto tag prompt', () => {
       settings.defaultBackend = 'nai';
       settings.nai.model = 'nai-diffusion-4-5-full';
       text = (await buildAutoTagMessages(context(), 1, options, null))
+        .slice(1) // 本测试只检查后端规则，独立核心提示不属于该断言范围。
         .map(m => m.content)
         .join('\n');
       expect(text).toContain('判定为同人时同一行定出最终身份 tag 词');
@@ -425,6 +570,7 @@ describe('auto tag prompt', () => {
       // contentRule 明令禁止 negative tags,不该有 negative 条件自查。
       settings.nai.model = 'nai-diffusion-5-full';
       text = (await buildAutoTagMessages(context(), 1, options, null))
+        .slice(1) // 本测试只检查后端规则，独立核心提示不属于该断言范围。
         .map(m => m.content)
         .join('\n');
       expect(text).toContain('身份 tag 必须写进档案');

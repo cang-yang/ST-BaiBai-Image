@@ -73,13 +73,16 @@ export interface RequestOptions {
 /* ============ 请求历史埋点(纯辅助,绝不允许影响主流程) ============ */
 
 /** 从响应体取 OpenAI 标准 usage。ST 代理非流式分支原样透传上游 JSON,故这里拿到的是真值。 */
-function readUsage(data: any): { prompt: number | null; completion: number | null } {
+export function readUsage(data: any): { prompt: number | null; completion: number | null; cached: number | null } {
   const usage = data?.usage;
   const num = (v: unknown): number | null =>
-    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
+    typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
+  const prompt = num(usage?.prompt_tokens);
+  const cached = num(usage?.prompt_cache_hit_tokens) ?? num(usage?.prompt_tokens_details?.cached_tokens);
   return {
-    prompt: num(usage?.prompt_tokens),
+    prompt,
     completion: num(usage?.completion_tokens),
+    cached: cached !== null && (prompt === null || cached <= prompt) ? cached : null,
   };
 }
 
@@ -285,7 +288,7 @@ async function requestCompletionAtUrl(
         if (!streamed) throw new ApiError('副 API 返回空内容');
         // 流式无 usage:ST 构造上游请求体是字段白名单,不含 stream_options,
         // 没法让上游在末尾回 usage chunk。只能事后本地估算。
-        return { content: streamed, usage: { prompt: null, completion: null } };
+        return { content: streamed, usage: { prompt: null, completion: null, cached: null } };
       }
 
       const data = await resp.json();
@@ -309,6 +312,7 @@ async function requestCompletionAtUrl(
           response: result.content,
           promptTokens: result.usage.prompt,
           completionTokens: result.usage.completion,
+          cacheReadTokens: result.usage.cached,
           tokensEstimated: false,
         }),
       );

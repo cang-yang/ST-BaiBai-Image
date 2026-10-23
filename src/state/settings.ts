@@ -18,6 +18,7 @@ import {
   vibeMetaFromData,
 } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
+import { mangaDefaults, normalizeManga, type MangaSettings } from '@/manga/layouts';
 import { reactive, watch } from 'vue';
 
 /**
@@ -1042,6 +1043,8 @@ export interface ImageSettings {
   excludes: ExcludesSettings;
   /** 落盘存储行为(新图格式)。 */
   storage: StoragePrefs;
+  /** 漫画 Layout 模式:模型只写符号框(panel/slot),坐标由插件查表注入。 */
+  manga: MangaSettings;
 }
 
 // extension_settings 里的命名空间键。
@@ -1207,6 +1210,7 @@ function defaults(): ImageSettings {
     },
     excludes: excludesDefaults(),
     storage: { saveAsJpeg: true },
+    manga: mangaDefaults(),
   };
 }
 
@@ -1824,6 +1828,7 @@ function normalize(raw: unknown): ImageSettings {
   merged.storage = {
     saveAsJpeg: typeof rs.saveAsJpeg === 'boolean' ? rs.saveAsJpeg : d.storage.saveAsJpeg,
   };
+  merged.manga = normalizeManga(r.manga);
   return merged;
 }
 
@@ -1853,6 +1858,7 @@ function applyInto(target: ImageSettings, src: ImageSettings): void {
   target.autoTag = src.autoTag;
   target.excludes = src.excludes;
   target.storage = src.storage;
+  target.manga = src.manga;
 }
 
 /* —— 渠道共享存储:与柏宝书等「柏宝」插件共用同一份渠道列表 ——
