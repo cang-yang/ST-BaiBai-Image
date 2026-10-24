@@ -316,14 +316,15 @@ export function applyMangaFrames(
   const summary = root.summary && typeof root.summary==='object' && !Array.isArray(root.summary) ? root.summary as Record<string,unknown> : {};
   // One authoritative page guide, before style prose; never repeat pairwise
   // occlusion or outer-frame coordinates in each character/text caption.
-  summary.caption = `${pageFrameGuide(layout)} ${typeof summary.caption==='string' ? summary.caption : ''}`.trim();
+  const hasText = items.some(item => item.label === 'text' && typeof item.text === 'string' && item.text.trim());
+  summary.caption = `${pageFrameGuide(layout, hasText)} ${typeof summary.caption==='string' ? summary.caption : ''}`.trim();
   root.summary=summary;
   root.bbox_coord_space = 'abs_centralized';
   root.bbox_format = 'yxyx';
   return JSON.stringify(root);
 }
 
-function pageFrameGuide(layout: ResolvedLayout): string {
+function pageFrameGuide(layout: ResolvedLayout, hasText: boolean): string {
   const frames = layout.panels.map((panel,index) => {
     const box = panel.slots.F ?? panel.slots.C;
     const shape = panel.shapes?.F;
@@ -338,7 +339,7 @@ function pageFrameGuide(layout: ResolvedLayout): string {
     ...(layering.length ? [`Stacking: ${layering.join('; ')}. Front frames occlude rear frames only in their overlap; the rear scene continues behind them. Overlays and inset panels do not split the rear frame into extra panels.`] : []),
     `Reading sequence: ${layout.panels.map((_,i)=>`panel ${i+1}`).join(' then ')}; stacking does not change this sequence.`,
     'Each item belongs to its named panel; its bbox is a content region, not another comic frame. Only explicitly described border overlaps may extend outside that panel. Panel references and layout instructions are not visible lettering.',
-    'Create speech bubbles only for supplied dialogue items, never for unused text regions or silent people. Bubbles may overlap secondary clothing or body areas when necessary; keep faces, key hand gestures, contact points and important props unobscured.',
+    ...(hasText ? ['Visible lettering follows the supplied text items and their assigned regions. Preserve each item’s exact wording and described container. Text placement can overlap secondary clothing while keeping faces, key hand gestures, contact points and important props clearly visible.'] : []),
   ].join(' ');
 }
 

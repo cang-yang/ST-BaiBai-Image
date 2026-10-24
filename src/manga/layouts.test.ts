@@ -46,9 +46,35 @@ describe('applyMangaFrames', () => {
     expect(out.items.slice(1).every((i:any)=>i.bbox[3]<0)).toBe(true);
     expect(out.items[1].caption).toContain('upper-left text region');
     expect(out.items[3].caption).toContain('lower-left text region');
-    expect(out.summary.caption).toContain('silent people');
-    expect(out.summary.caption).toContain('keep faces');
+    expect(out.summary.caption).toContain('supplied text items');
+    expect(out.summary.caption).toContain('keeping faces');
     expect(JSON.stringify(input)).toBe(original);
+  });
+  it('纯画面输入保留字区几何但编译结果省略文字与气泡引导',()=>{
+    const manga=settingsWith();
+    const input={layout:'balanced_1',summary:{caption:'A color comic showing a quiet room.'},items:[
+      {panel:1,slot:'C',label:'object',caption:'A wooden table beside a window.'},
+      {panel:1,slot:'S',label:'character',caption:'An adult traveler reading a book.'},
+    ]};
+    const before=JSON.stringify(manga);
+    const out=JSON.parse(applyMangaFrames(JSON.stringify(input),manga,PORTRAIT));
+    expect(out.items).toHaveLength(2);
+    expect(out.items.some((item:any)=>item.label==='text')).toBe(false);
+    expect(out.summary.caption).not.toMatch(/speech bubbles?|supplied dialogue|silent people|supplied text items|text placement/i);
+    expect(out.summary.caption).toContain('exactly 1 distinct comic panels');
+    expect(JSON.stringify(manga)).toBe(before);
+  });
+  it('仅拟声输入保留原字样和字区，采用通用文字引导而非对白气泡引导',()=>{
+    const input={layout:'balanced_1',summary:{caption:'A color comic.',meta:['handwritten_speech_bubble_94255']},items:[
+      {panel:1,slot:'C',label:'object',caption:'Two coins landing on a table.'},
+      {panel:1,slot:'O',label:'text',text:'チャリン',caption:'Japanese handwritten sound effect beside the coins.'},
+    ]};
+    const out=JSON.parse(applyMangaFrames(JSON.stringify(input),settingsWith(),PORTRAIT));
+    expect(out.items[1].text).toBe('チャリン');
+    expect(out.items[1].bbox).toHaveLength(4);
+    expect(out.summary.meta).toEqual(input.summary.meta);
+    expect(out.summary.caption).toContain('supplied text items');
+    expect(out.summary.caption).not.toMatch(/speech bubbles?|supplied dialogue|silent people/i);
   });
   it('重复非矩形字区与无法划分的极窄字区明确报错，不生成重叠或无效框',()=>{
     const item={panel:1,slot:'T',label:'text',text:'一句话。',caption:'Dialogue.'};
