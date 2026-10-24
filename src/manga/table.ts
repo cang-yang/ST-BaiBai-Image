@@ -19,6 +19,8 @@ export interface MangaPanel {
   layer?: number;
   /** 槽位字母 → 坐标框。 */
   slots: Record<string, FrameBox>;
+  /** 各框用途，F 说明整格，其余键说明对应内框；只发送给规划 LLM。 */
+  slotNotes?: Record<string, string>;
   /** 自定义四边形轮廓：[x,y]，以画布中心为原点；bbox 仍为其外接矩形。 */
   shapes?: Record<string, number[][]>;
 }

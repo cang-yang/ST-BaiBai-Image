@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRenderer, defineComponent, ssrContextKey } from 'vue';
-import { mangaDefaults, resolveLayouts } from '@/manga/layouts';
+import { applyMangaFrames, mangaDefaults, normalizeManga, parseCustomLayout, resolveLayouts } from '@/manga/layouts';
 vi.mock('@/pages/settings/MangaLayoutEditor.vue', () => ({ default: {} }));
 vi.mock('@/state/settings', async () => {
   const { reactive } = await import('vue');
@@ -47,6 +47,78 @@ describe('可视化编辑保存',()=>{
     state.saveQuick({id:'balanced_1',canvas:{width:1088,height:1920},portrait:[{position:'edited',slots:{F:[-800,-400,800,400]}}]});
     expect(settings.manga.custom[0].id).toBe('balanced_1');
     expect(resolveLayouts(settings.manga,'landscape').find(item=>item.id==='balanced_1')?.panels).toHaveLength(1);
+    close();
+  });
+  it('批量缩放启用和停用版式，保留跨格内框、形变、用途、层级和删除记录',()=>{
+    const deleted={id:'balanced_2',usage:'已删除项的用途'};
+    const orphan={id:'legacy_note',usage:'仅存说明'};
+    settings.manga.deleted=['balanced_2'];
+    settings.manga.disabled=['mine','balanced_1'];
+    settings.manga.custom=[deleted,orphan,{id:'mine',label:'跨格',readingOrder:'先上后下',canvas:{width:1024,height:2048},portrait:[
+      {position:'opening',layer:2,slots:{F:[-1024,-512,0,512],S:[-600,-400,800,400]},shapes:{S:[[-400,-600],[400,-580],[390,800],[-390,790]]},slotNotes:{F:'开场',S:'跨格主体'}},
+      {position:'ending',layer:0,slots:{F:[0,-512,1024,512]}},
+    ]}];
+    const before=JSON.parse(JSON.stringify(settings.manga));
+    const {state,close}=section(); state.resizeAllCanvases();
+    expect(state.batchError.value).toBe('');
+    expect(settings.manga.disabled).toEqual(before.disabled);
+    expect(settings.manga.deleted).toEqual(before.deleted);
+    expect(settings.manga.custom.find(entry=>entry.id==='balanced_2')).toEqual(deleted);
+    expect(settings.manga.custom.find(entry=>entry.id==='legacy_note')).toEqual(orphan);
+    for(const orientation of ['portrait','landscape'] as const){
+      const layouts=resolveLayouts({...settings.manga,disabled:[]},orientation);
+      expect(layouts.some(entry=>entry.id==='balanced_2')).toBe(false);
+      expect(layouts.every(entry=>entry.canvas.width===(orientation==='portrait'?1664:2496) && entry.canvas.height===(orientation==='portrait'?2496:1664))).toBe(true);
+    }
+    const mine=settings.manga.custom.find(entry=>entry.id==='mine')!;
+    expect(mine.portrait?.map(panel=>[panel.position,panel.layer])).toEqual([['opening',2],['ending',0]]);
+    expect(mine.portrait?.[0].slots.S).toEqual([-731,-650,975,650]);
+    expect(mine.portrait?.[0].shapes?.S).toEqual([[-650,-731],[650,-707],[634,975],[-634,963]]);
+    expect(mine.portrait?.[0].slotNotes).toEqual({F:'开场',S:'跨格主体'});
+    expect(parseCustomLayout(JSON.stringify(mine))).toEqual(mine);
+    const compiled=JSON.parse(applyMangaFrames(JSON.stringify({summary:{caption:'A color comic.'},layout:'mine',items:[{panel:1,slot:'S',label:'character',caption:'A traveler.'}]}),{...settings.manga,enabled:true,disabled:[]},{width:1664,height:2496}));
+    expect(compiled.items[0].bbox).toEqual(mine.portrait?.[0].slots.S);
+    expect(normalizeManga(JSON.parse(JSON.stringify(settings.manga)))).toEqual(settings.manga);
+    state.undoResize();
+    expect(settings.manga).toEqual(before);
+    close();
+  });
+  it('宽高输入自动匹配横竖方向，连续调整按当前坐标缩放，方形可用于两个方向',()=>{
+    const {state,close}=section();
+    state.batchWidth.value=2496;state.batchHeight.value=1664;state.resizeAllCanvases();
+    expect(state.batchError.value).toBe('');
+    state.batchWidth.value=1088;state.batchHeight.value=1920;state.resizeAllCanvases();
+    expect(state.batchError.value).toBe('');
+    expect(resolveLayouts(settings.manga,'landscape').every(layout=>layout.canvas.width===1920 && layout.canvas.height===1088)).toBe(true);
+    state.batchWidth.value=1024;state.batchHeight.value=1024;state.resizeAllCanvases();
+    expect(state.batchError.value).toBe('');
+    expect(resolveLayouts(settings.manga,'landscape').every(layout=>layout.canvas.width===1024 && layout.canvas.height===1024)).toBe(true);
+    close();
+  });
+  it('无效尺寸整体保持原设置；后续编辑使批量撤销失效',()=>{
+    const {state,close}=section();
+    const original=JSON.stringify(settings.manga);
+    state.batchWidth.value=1663;state.resizeAllCanvases();
+    expect(state.batchError.value).toContain('偶数');
+    expect(JSON.stringify(settings.manga)).toBe(original);
+    state.batchWidth.value=1664;state.resizeAllCanvases();
+    expect(state.canUndoResize.value).toBe(true);
+    settings.manga.custom[0].usage='随后编辑的说明';
+    const edited=JSON.stringify(settings.manga);
+    expect(state.canUndoResize.value).toBe(false);
+    state.undoResize();
+    expect(JSON.stringify(settings.manga)).toBe(edited);
+    close();
+  });
+  it('批量调整后单独编辑横版尺寸，配套竖版坐标同步缩放并能保存解析',()=>{
+    const {state,close}=section();state.resizeAllCanvases();
+    const previous=resolveLayouts(settings.manga,'portrait').find(layout=>layout.id==='balanced_1')!;
+    state.openQuick('balanced_1');
+    state.saveQuick({id:'balanced_1',canvas:{width:1920,height:1088},landscape:[{position:'wide',slots:{F:[-544,-960,544,960]}}]});
+    const saved=settings.manga.custom.find(entry=>entry.id==='balanced_1')!;
+    expect(parseCustomLayout(JSON.stringify(saved))).toEqual(saved);
+    expect(resolveLayouts(settings.manga,'portrait').find(layout=>layout.id==='balanced_1')?.canvas).toEqual({width:1088,height:1920});
+    expect(saved.portrait?.[0].slots.F).toEqual(previous.panels[0].slots.F.map((n,index)=>Math.round(n*(index%2?1088/1664:1920/2496))));
     close();
   });
 });

@@ -3,6 +3,34 @@ import { deformCorner, editablePanel, fitRect, panelFromRect, panelRect, quadPoi
 import { applyMangaFrames, buildMangaSpec, mangaDefaults, normalizeManga, parseCustomLayout, panelLayerGuides } from './layouts';
 
 describe('快捷版式坐标与保存', () => {
+  it('框用途保存、重载及归一化后进入 LLM 清单，不直接进入生图 JSON',()=>{
+    const canvas={width:1024,height:1024};
+    const panel=editablePanel({x:100,y:100,width:600,height:600},canvas);
+    panel.slotNotes={F:'建立场景与人物关系',S:'人物半身反应',TL:'左侧人物第一句',REMOVED:'已删除字区'};
+    const saved=saveEditedPanel(panel,canvas,'one');
+    expect(saved.slotNotes).toEqual({F:'建立场景与人物关系',S:'人物半身反应',TL:'左侧人物第一句'});
+    const loaded=editablePanel(panelRect(saved,canvas),canvas,saved);
+    loaded.slotNotes!.S='修改后的用途';
+    expect(saved.slotNotes!.S).toBe('人物半身反应');
+    expect(saveEditedPanel(editablePanel(panelRect(saved,canvas),canvas,saved),canvas,'one')).toEqual(saved);
+    const layout=parseCustomLayout(JSON.stringify({id:'purposes',canvas,portrait:[saved]}));
+    const settings=normalizeManga({...mangaDefaults(),enabled:true,custom:[layout]});
+    expect(settings.custom[0].portrait?.[0].slotNotes).toEqual(saved.slotNotes);
+    const spec=buildMangaSpec(settings);
+    expect(spec).toContain('框用途 {"F":"建立场景与人物关系","S":"人物半身反应","TL":"左侧人物第一句"}');
+    expect(spec).toContain('不把说明当作台词');
+    const compiled=applyMangaFrames(JSON.stringify({layout:'purposes',items:[{panel:1,slot:'S',label:'character',caption:'An adult traveler holding a book.'}]}),settings,canvas);
+    expect(compiled).not.toContain('人物半身反应');
+    expect(compiled).not.toContain('slotNotes');
+    const legacy=editablePanel({x:0,y:0,width:100,height:100},canvas);
+    expect(saveEditedPanel(legacy,canvas,'old').slotNotes).toBeUndefined();
+  });
+
+  it('框用途只保留有效槽位的非空文本，规范化大小写并过滤无效数据',()=>{
+    const settings=normalizeManga({...mangaDefaults(),custom:[{id:'notes',portrait:[{position:'one',slots:{F:[-100,-100,100,100],S:[-80,-80,80,80]},slotNotes:{' f ':'  整格用途  ',s:'主体用途',MISSING:'不存在',T:3,blank:''}}]}]});
+    expect(settings.custom[0].portrait?.[0].slotNotes).toEqual({F:'整格用途',S:'主体用途'});
+  });
+
   it('层级往返保存，遮挡说明注入提示词且不改变 items 读序',()=>{
     const canvas={width:1024,height:1024};
     const rear=editablePanel({x:100,y:100,width:600,height:600},canvas); rear.layer=1;

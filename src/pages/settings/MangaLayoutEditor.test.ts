@@ -27,6 +27,40 @@ function editor(props: Record<string,unknown> = {}) {
 }
 
 describe('版式编辑器 Ctrl 角点交互',()=>{
+  it('内外框用途独立保存；取消恢复本次内框说明，确认保留，清空可撤销',()=>{
+    const {state,close}=editor();
+    const change=(value:string)=>state.changeSlotNote({target:{value}});
+    change('Opening panel ');
+    expect(state.doc.value.panels[0].slotNotes.F).toBe('Opening panel ');
+    change('整格用于开场');
+    state.selectSlot(0,'S'); change('主体用于反应特写');
+    state.cancelSlot();
+    expect(state.doc.value.panels[0].slotNotes).toEqual({F:'整格用于开场'});
+    state.selectSlot(0,'S'); change('主体用于反应特写'); state.confirmSlot();
+    expect(state.doc.value.panels[0].slotNotes).toEqual({F:'整格用于开场',S:'主体用于反应特写'});
+    state.selectSlot(0,'S'); change(''); state.confirmSlot();
+    expect(state.doc.value.panels[0].slotNotes.S).toBeUndefined();
+    state.undo();
+    expect(state.doc.value.panels[0].slotNotes.S).toBe('主体用于反应特写');
+    close();
+  });
+
+  it('复制和缩放保留框用途且副本独立；删除槽位移除其用途，撤销恢复',()=>{
+    const {state,close}=editor();
+    state.changeSlotNote({target:{value:'外框用途'}});
+    state.selectSlot(0,'S'); state.changeSlotNote({target:{value:'主体用途'}}); state.confirmSlot();
+    state.duplicate();
+    state.selectSlot(1,'S'); state.changeSlotNote({target:{value:'副本主体用途'}}); state.confirmSlot();
+    expect(state.doc.value.panels[0].slotNotes.S).toBe('主体用途');
+    state.canvasWidth.value=1664;state.canvasHeight.value=2496;state.resizeCanvas();
+    expect(state.doc.value.panels[1].slotNotes).toEqual({F:'外框用途',S:'副本主体用途'});
+    state.selectSlot(1,'S');state.deleteSlot();
+    expect(state.doc.value.panels[1].slotNotes.S).toBeUndefined();
+    state.undo();
+    expect(state.doc.value.panels[1].slotNotes.S).toBe('副本主体用途');
+    close();
+  });
+
   it('左右下字区可独立调整和删除，恢复默认槽位后重新出现',()=>{
     const {state,close}=editor();
     const right=JSON.stringify(state.doc.value.panels[0].slots.BR);
@@ -60,8 +94,11 @@ describe('版式编辑器 Ctrl 角点交互',()=>{
     expect(state.doc.value.panels[1].layer).toBe(1);
     close();
   });
-  it('确认右人物 R 后仍显示内框，且不改变槽位坐标',()=>{
+  it('内框默认全部可见，确认和重新载入后保持显示；总开关仍可关闭',()=>{
     const {state,close}=editor();
+    const visible=()=>state.visibleSlots(state.doc.value.panels[0],0).map((slot:any)=>slot.key).sort();
+    const keys=Object.keys(state.doc.value.panels[0].slots).sort();
+    expect(visible()).toEqual(keys);
     state.selectSlot(0,'R');
     state.changeRect('x',{target:{value:300}});
     const rect=JSON.stringify(state.doc.value.panels[0].slots.R);
@@ -69,8 +106,12 @@ describe('版式编辑器 Ctrl 角点交互',()=>{
     expect(state.selectedSlot.value).toBe('');
     expect(state.visibleSlots(state.doc.value.panels[0],0).map((slot:any)=>slot.key)).toContain('R');
     expect(JSON.stringify(state.doc.value.panels[0].slots.R)).toBe(rect);
+    state.restore(JSON.stringify(state.doc.value));
+    expect(visible()).toEqual(keys);
     state.slotsPreview.value=false;
     expect(state.visibleSlots(state.doc.value.panels[0],0)).toEqual([]);
+    state.slotsPreview.value=true;
+    expect(visible()).toEqual(keys);
     close();
   });
   it('可视化编辑载入原 ID 和名称，不自动新建副本',()=>{

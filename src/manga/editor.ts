@@ -4,7 +4,7 @@ import { validQuad } from '@/manga/layouts';
 export interface CanvasSize { width: number; height: number }
 export interface PanelRect { x: number; y: number; width: number; height: number }
 /** 槽位按父格比例保存，移动/缩放外框时随父格变动。F 由外框生成，不能单独删除。 */
-export interface EditablePanel extends PanelRect { slots: Record<string, PanelRect>; corners: Record<string, number[][]>; layer?: number; position?: string }
+export interface EditablePanel extends PanelRect { slots: Record<string, PanelRect>; corners: Record<string, number[][]>; layer?: number; position?: string; slotNotes?: Record<string, string> }
 export const MIN_PANEL = 24;
 export const clamp = (v: number, min: number, max: number): number => Math.max(min, Math.min(max, v));
 
@@ -32,6 +32,7 @@ export function editablePanel(rect: PanelRect, canvas: CanvasSize, source?: Mang
     const bounds = key === 'F' ? result : slotRect(result,key);
     result.corners[key] = points.map(([x,y]) => [(x + canvas.width/2 - bounds.x)/bounds.width, (y + canvas.height/2 - bounds.y)/bounds.height]);
   }
+  if (source?.slotNotes) result.slotNotes = { ...source.slotNotes };
   return result;
 }
 
@@ -66,7 +67,8 @@ export function saveEditedPanel(panel: EditablePanel, canvas: CanvasSize, positi
     return [y1 - canvas.height / 2, x1 - canvas.width / 2, clamp(Math.round(r.y + r.height), y1 + 1, canvas.height) - canvas.height / 2, clamp(Math.round(r.x + r.width), x1 + 1, canvas.width) - canvas.width / 2];
   };
   const shapes = Object.fromEntries(Object.keys(panel.corners).filter(key => key === 'F' || panel.slots[key]).map(key => [key,quadPoints(panel,key).map(([x,y])=>[clamp(Math.round(x),0,canvas.width)-canvas.width/2,clamp(Math.round(y),0,canvas.height)-canvas.height/2])]));
-  return { position, ...(panel.layer !== undefined ? { layer:panel.layer } : {}), slots: { F: box(panel), ...Object.fromEntries(Object.keys(panel.slots).map(key => [key, box(slotRect(panel, key))])) }, ...(Object.keys(shapes).length ? { shapes } : {}) };
+  const slotNotes = Object.fromEntries(Object.entries(panel.slotNotes ?? {}).filter(([key,note]) => (key === 'F' || panel.slots[key]) && note.trim()).map(([key,note]) => [key,note.trim()]));
+  return { position, ...(panel.layer !== undefined ? { layer:panel.layer } : {}), slots: { F: box(panel), ...Object.fromEntries(Object.keys(panel.slots).map(key => [key, box(slotRect(panel, key))])) }, ...(Object.keys(shapes).length ? { shapes } : {}), ...(Object.keys(slotNotes).length ? { slotNotes } : {}) };
 }
 
 /** 自动槽位只是框内的候选区域，不划分人物或约束真实文字尺寸。 */

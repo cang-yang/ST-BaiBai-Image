@@ -41,7 +41,7 @@ export interface MangaCustomLayout {
   readingOrder?: string;
   portrait?: MangaPanel[];
   landscape?: MangaPanel[];
-  /** 快捷编辑器保存的画布尺寸；旧版式缺省时沿用对应方向内置画布。 */
+  /** 自定义画布尺寸；同时保存横竖版时，另一方向交换宽高。缺省沿用内置画布。 */
   canvas?: { width: number; height: number };
 }
 
@@ -88,6 +88,44 @@ export function builtinIds(orientation: MangaOrientation): string[] {
   return Object.keys(MANGA_TABLE.layouts[orientation] ?? {});
 }
 
+export function layoutCanvas(entry: MangaCustomLayout | undefined, orientation: MangaOrientation): { width: number; height: number } {
+  if (!entry?.[orientation]?.length || !entry.canvas) return canvasOf(orientation);
+  const { width, height } = entry.canvas;
+  return entry.portrait?.length && entry.landscape?.length && orientationOf(width, height) !== orientation
+    ? { width: height, height: width } : { width, height };
+}
+
+export function resizeMangaPanels(panels: MangaPanel[], source: { width: number; height: number }, target: { width: number; height: number }): MangaPanel[] {
+  const sx = target.width / source.width, sy = target.height / source.height;
+  return panels.map(panel => ({ ...panel,
+    slots: Object.fromEntries(Object.entries(panel.slots).map(([key, box]) => [key, box.map((value,index) => Math.round(value * (index % 2 ? sx : sy)))])),
+    ...(panel.shapes ? { shapes: Object.fromEntries(Object.entries(panel.shapes).map(([key, points]) => [key, points.map(([x,y]) => [Math.round(x*sx), Math.round(y*sy)])])) } : {}),
+  }));
+}
+
+/** Resize the current list atomically; deleted entries and enable flags stay untouched. */
+export function resizeMangaCanvases(manga: MangaSettings, width: number, height: number): MangaCustomLayout[] {
+  const canvas = normalizeCanvas({ width, height });
+  if (!canvas) throw new Error('画布宽高须为 64～8192 的偶数。');
+  const portrait = { width: Math.min(width,height), height: Math.max(width,height) };
+  const updates = new Map(manga.custom.map(entry => [entry.id, entry]));
+  const changed = new Set<string>();
+  const probe = { ...manga, disabled: [] };
+  // Resolve both directions before replacing any entries so every scale uses the original canvas.
+  for (const orientation of ['portrait', 'landscape'] as const) {
+    const target = orientation === 'portrait' ? portrait : { width: portrait.height, height: portrait.width };
+    for (const layout of resolveLayouts(probe, orientation)) {
+      const entry = updates.get(layout.id);
+      changed.add(layout.id);
+      updates.set(layout.id, { ...entry, id: layout.id, label: layout.label, usage: layout.usage, readingOrder: layout.readingOrder,
+        canvas: orientation === 'landscape' && entry?.portrait?.length ? portrait : target,
+        [orientation]: resizeMangaPanels(layout.panels, layout.canvas, target),
+      });
+    }
+  }
+  return [...updates.values()].map(entry => changed.has(entry.id) ? parseCustomLayout(JSON.stringify(entry)) : entry);
+}
+
 /**
  * 合并内置与自定义,按内置顺序优先,自定义新 id 追加在后。
  * 停用的 id 不出现——提示词清单与坐标注入用的是同一份结果,不会出现「模型能选但查不到框」。
@@ -103,7 +141,7 @@ export function resolveLayouts(manga: MangaSettings, orientation: MangaOrientati
     pending.delete(id);
     out.push({
       id,
-      canvas: override?.[orientation]?.length && override.canvas ? override.canvas : canvasOf(orientation),
+      canvas: layoutCanvas(override, orientation),
       label: override?.label?.trim() || def.label,
       usage: override?.usage?.trim() || def.usage,
       readingOrder: override?.readingOrder?.trim() || def.readingOrder,
@@ -115,7 +153,7 @@ export function resolveLayouts(manga: MangaSettings, orientation: MangaOrientati
     if (!panels?.length) continue;
     out.push({
       id: entry.id,
-      canvas: entry.canvas ?? canvasOf(orientation),
+      canvas: layoutCanvas(entry, orientation),
       label: entry.label?.trim() || entry.id,
       usage: entry.usage?.trim(),
       readingOrder: entry.readingOrder?.trim() || '',
@@ -368,6 +406,7 @@ export function buildMangaSpec(manga: MangaSettings): string {
   lines.push('- 挑法:先按「用途」筛掉不合节拍的版式,再比格数;依据不足就选更简单、更少格的。分配事件与对白严格沿该行给出的读序。');
   lines.push('- 槽位:F 格框 C 完整内区 S 避开顶部字区的主体 L/R 左右人物 O 道具音效 T/TL/TR 顶部字区 B 底部字区 BL/BR 左下/右下字区 ML/MR 侧边字区 E 允许小部分越线进格间留白 X 出框范围(比 F 大一圈)。清单里没列出的槽位在该格不存在,填了会让这次生成失败。');
   lines.push('- 一格一个主体框:同一个人在一格里只占一个框,不为备选框生成副本。');
+  lines.push('- 框用途是用户提供的内容分配说明：F 描述整格用途，其余键只作用于对应内框。结合原文与该说明选择内容，不把说明当作台词、旁白或可见印字，不新增槽位、坐标、剧情事件或参与者。空说明沿用槽位默认用途。');
   lines.push('- 字区按实际发言、说话人位置与读序选择 T/TL/TR/B/BL/BR/ML/MR；只有左侧人物说话时仅用左侧所需字区，右侧同理，不为沉默者、空位或配额创建 text 项与空气泡。字区可覆盖次要身体或衣物，不遮脸、关键手势、接触点或重要道具。');
   lines.push('- 每一格只能引用其清单中实际存在的槽位，删除的槽位不可使用。没有 T 时应从现有 TL/TR 选择上方字区，不要假定每格都有 T；没有任何字区时不要生成 text 项。');
   lines.push('- 左侧两泡优先 TL→BL，右侧两泡优先 TR→BR；更多台词可使用该侧现有 ML/MR 等字区，先规划实际读序，不机械按左右交替。BL/BR 是独立字区，仅在清单列出时使用，不与整块 B 混用覆盖同一区域。');
@@ -392,7 +431,7 @@ export function buildMangaSpec(manga: MangaSettings): string {
         lines.push(`Panel stacking for ${layout.id}, back to front: ${order.map(({index})=>`panel ${index+1}`).join(' → ')}. Apply occlusion only where frames overlap; preserve reading order.`);
       }
       const cells = layout.panels
-        .map((panel, index) => `${index + 1}(${panel.position}):${slotLine(panel)}${panel.shapes ? `（四边形轮廓参考 ${Object.keys(panel.shapes).join(' ')}）` : ''}`)
+        .map((panel, index) => `${index + 1}(${panel.position}):${slotLine(panel)}${panel.shapes ? `（四边形轮廓参考 ${Object.keys(panel.shapes).join(' ')}）` : ''}${panel.slotNotes && Object.keys(panel.slotNotes).length ? `；框用途 ${JSON.stringify(panel.slotNotes)}` : ''}`)
         .join('  ');
       lines.push(`- ${head}｜${cells}`);
     }
@@ -422,8 +461,8 @@ export function parseCustomLayout(text: string): MangaCustomLayout {
   for (const orientation of ['portrait', 'landscape'] as const) {
     if (source[orientation] === undefined) continue;
     const panels = source[orientation];
-    const canvas = entry.canvas ?? canvasOf(orientation);
-    if (entry.canvas && orientationOf(canvas.width, canvas.height) !== orientation) throw new Error('面板方向与自定义画布宽高不符。');
+    const canvas = layoutCanvas(entry, orientation);
+    if (entry.canvas && canvas.width !== canvas.height && orientationOf(canvas.width, canvas.height) !== orientation) throw new Error('面板方向与自定义画布宽高不符。');
     const positions = new Set<string>();
     if (!Array.isArray(panels) || !panels.length) throw new Error(`${orientation}:需要非空面板数组。`);
     for (const rawPanel of panels) {
@@ -482,7 +521,14 @@ function normalizePanels(raw: unknown): MangaPanel[] | undefined {
         if (slots[slot] && validQuad(value)) shapes[slot] = value.map(p => p.map(Math.round));
       }
     }
-    if (Object.keys(slots).length) out.push({ position, slots, ...(Number.isSafeInteger(panel.layer) ? { layer:panel.layer } : {}), ...(Object.keys(shapes).length ? { shapes } : {}) });
+    const slotNotes: Record<string,string> = {};
+    if (panel.slotNotes && typeof panel.slotNotes === 'object' && !Array.isArray(panel.slotNotes)) {
+      for (const [key,value] of Object.entries(panel.slotNotes)) {
+        const slot = key.trim().toUpperCase();
+        if (slots[slot] && typeof value === 'string' && value.trim()) slotNotes[slot] = value.trim();
+      }
+    }
+    if (Object.keys(slots).length) out.push({ position, slots, ...(Number.isSafeInteger(panel.layer) ? { layer:panel.layer } : {}), ...(Object.keys(shapes).length ? { shapes } : {}), ...(Object.keys(slotNotes).length ? { slotNotes } : {}) });
   }
   return out.length ? out : undefined;
 }

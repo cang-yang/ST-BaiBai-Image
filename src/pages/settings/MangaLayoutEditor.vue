@@ -15,8 +15,6 @@ function unusedId(base: string): string {
 const doc = ref<LayoutDocument>({ id: unusedId('my_layout'), label: '自定义版式', usage: '', width: 1088, height: 1920, panels: [] });
 const selected = ref(-1);
 const selectedSlot = ref('');
-// Keep visited slots visible after confirmation without changing saved layout data.
-const previewSlots = ref(new Map<EditablePanel['slots'], Set<string>>());
 const sourceKey = ref(props.initialKey ?? '');
 const snap = ref(true);
 const slotsPreview = ref(true);
@@ -32,10 +30,6 @@ const activeRect = computed(() => current.value ? selectedSlot.value && current.
 const slotLabels: Record<string,string> = { C:'内区', S:'主体', T:'顶部文字', B:'底部文字', TL:'左上文字', TR:'右上文字', BL:'左下文字', BR:'右下文字', L:'左人物', R:'右人物', O:'道具/音效', ML:'左侧文字', MR:'右侧文字', E:'有限越线' };
 let slotSession: { before: string; undo: string[]; redo: string[] } | null = null;
 function confirmSlot(): void {
-  if (current.value && selectedSlot.value) {
-    const keys = previewSlots.value.get(current.value.slots) ?? new Set<string>();
-    keys.add(selectedSlot.value); previewSlots.value.set(current.value.slots, keys);
-  }
   slotSession = null; selectedSlot.value = '';
 }
 function cancelSlot(): void {
@@ -62,15 +56,15 @@ function setActiveRect(rect: PanelRect): void {
 }
 function deleteSlot(): void {
   const key = selectedSlot.value;
-  if (current.value && key) edit(() => { delete current.value!.slots[key]; delete current.value!.corners[key]; });
+  if (current.value && key) edit(() => { delete current.value!.slots[key]; delete current.value!.corners[key]; if (current.value!.slotNotes) delete current.value!.slotNotes[key]; });
 }
 function resetSlots(): void {
   if (current.value) edit(() => { current.value!.slots = editablePanel(current.value!, canvas.value).slots; current.value!.corners = current.value!.corners.F ? { F:current.value!.corners.F } : {}; selectedSlot.value = ''; });
 }
 function visibleSlots(panel: EditablePanel, index: number): { key: string; rect: PanelRect }[] {
   if (!slotsPreview.value) return [];
-  return Object.keys(panel.slots).filter(key => key === 'T' || key === 'S' || previewSlots.value.get(panel.slots)?.has(key) || (index === selected.value && key === selectedSlot.value))
-    .sort((a,b) => Number(a === selectedSlot.value) - Number(b === selectedSlot.value)).map(key => ({ key, rect: slotRect(panel,key) }));
+  return Object.keys(panel.slots)
+    .sort((a,b) => Number(index === selected.value && a === selectedSlot.value) - Number(index === selected.value && b === selectedSlot.value)).map(key => ({ key, rect: slotRect(panel,key) }));
 }
 const canvas = computed(() => ({ width: doc.value.width, height: doc.value.height }));
 const drawn = computed(() => doc.value.panels.map((rect, index) => ({ rect, index })).sort((a, b) => (a.rect.layer ?? a.index) - (b.rect.layer ?? b.index) || a.index-b.index));
@@ -124,7 +118,7 @@ function resizeCanvas(): void {
   if (!size) { error.value = '画布宽高须为 64～8192 的偶数。'; return; }
   edit(() => {
     const old = canvas.value;
-    doc.value.panels = doc.value.panels.map(p => ({ ...fitRect({ x: p.x * size.width / old.width, y: p.y * size.height / old.height, width: p.width * size.width / old.width, height: p.height * size.height / old.height }, size), slots: p.slots, corners:p.corners, layer:p.layer, position:p.position }));
+    doc.value.panels = doc.value.panels.map(p => ({ ...fitRect({ x: p.x * size.width / old.width, y: p.y * size.height / old.height, width: p.width * size.width / old.width, height: p.height * size.height / old.height }, size), slots: p.slots, corners:p.corners, layer:p.layer, position:p.position, ...(p.slotNotes ? { slotNotes:p.slotNotes } : {}) }));
     Object.assign(doc.value, size);
   });
 }
@@ -137,7 +131,7 @@ function add(): void {
   });
 }
 function remove(): void { if (current.value) edit(() => { doc.value.panels.splice(selected.value, 1); selectPanel(Math.min(selected.value, doc.value.panels.length - 1)); }); }
-function duplicate(): void { if (current.value) edit(() => { doc.value.panels.push({ ...fitRect({ ...current.value!, x: current.value!.x + 24, y: current.value!.y + 24 }, canvas.value), slots: JSON.parse(JSON.stringify(current.value!.slots)), corners:JSON.parse(JSON.stringify(current.value!.corners)), layer:Math.max(-1,...doc.value.panels.map((p,i)=>p.layer ?? i))+1 }); selectPanel(doc.value.panels.length - 1); }); }
+function duplicate(): void { if (current.value) edit(() => { doc.value.panels.push({ ...fitRect({ ...current.value!, x: current.value!.x + 24, y: current.value!.y + 24 }, canvas.value), slots: JSON.parse(JSON.stringify(current.value!.slots)), corners:JSON.parse(JSON.stringify(current.value!.corners)), ...(current.value!.slotNotes ? { slotNotes:{...current.value!.slotNotes} } : {}), layer:Math.max(-1,...doc.value.panels.map((p,i)=>p.layer ?? i))+1 }); selectPanel(doc.value.panels.length - 1); }); }
 function reorder(delta: number): void {
   const to = selected.value + delta;
   if (!current.value || to < 0 || to >= doc.value.panels.length) return;
@@ -148,6 +142,14 @@ function changeRect(key: keyof PanelRect, event: Event): void {
   if (activeRect.value && Number.isFinite(value)) edit(() => { setActiveRect(fitRect({ ...activeRect.value!, [key]: value }, canvas.value, selectedSlot.value ? 1 : MIN_PANEL)); }, true);
 }
 function changeText(key: 'id' | 'label' | 'usage', event: Event): void { edit(() => { doc.value[key] = (event.target as HTMLInputElement).value; }); }
+function changeSlotNote(event: Event): void {
+  if (!current.value) return;
+  const key = selectedSlot.value || 'F', note = (event.target as HTMLTextAreaElement).value;
+  edit(() => {
+    if (note) (current.value!.slotNotes ??= {})[key] = note;
+    else if (current.value!.slotNotes) delete current.value!.slotNotes[key];
+  }, true);
+}
 
 let gesture: { pointerId: number; x: number; y: number; rect: PanelRect; before: string; handle: string; quad:number[][]; deform:boolean } | null = null;
 function point(event: PointerEvent): { x: number; y: number } {
@@ -301,6 +303,10 @@ onMounted(() => {
             </div>
             <button type="button" :disabled="!selectedSlot" @click="deleteSlot">删除选中槽位</button>
             <button type="button" @click="resetSlots">恢复本格默认槽位</button>
+            <label>{{ selectedSlot ? `内框 ${selectedSlot} 用途说明` : '外框 F 用途说明' }}
+              <textarea :value="current.slotNotes?.[selectedSlot || 'F'] ?? ''" aria-label="当前框用途说明" rows="3" :placeholder="selectedSlot ? '例如：半身主体，侧重人物动作与反应' : '例如：交代场景和人物关系的开场格'" @input="changeSlotNote"></textarea>
+            </label>
+            <p class="hint">随版式保存，发送给 LLM 帮助分配本框内容；留空沿用默认用途。说明本身不作为画面文字。</p>
             <div class="slot-list"><button type="button" :class="{active:!selectedSlot}" @click="confirmSlot">外框 F</button><button v-for="(_,key) in current.slots" :key="key" type="button" :class="{active:selectedSlot===key}" @click="selectSlot(selected,String(key))">{{ key }} {{ slotLabels[key] ?? '' }}</button></div>
             <label v-for="field in (['x','y','width','height'] as const)" :key="field">{{ {x:'左边距',y:'上边距',width:'宽度',height:'高度'}[field] }}<input :value="activeRect?.[field]" :aria-label="`${selectedSlot ? '槽位' : '分格'}${field}`" type="number" step="1" @change="changeRect(field,$event)" /></label>
           </template>

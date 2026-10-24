@@ -11,6 +11,8 @@ import {
   type MangaOrientation,
   canvasOf,
   orientationOf,
+  resizeMangaCanvases,
+  resizeMangaPanels,
 } from '@/manga/layouts';
 
 const ORIENTATIONS: MangaOrientation[] = ['portrait', 'landscape'];
@@ -22,6 +24,28 @@ const note = ref('');
 const quickOpen = ref(false);
 const quickSource = ref('');
 const quickEditingId = ref('');
+const batchWidth = ref(1664), batchHeight = ref(2496);
+const batchError = ref('');
+const resizeBackup = ref<{ before: MangaCustomLayout[]; after: string }>();
+const canUndoResize = computed(() => resizeBackup.value?.after === JSON.stringify(settings.manga.custom));
+function resizeAllCanvases(): void {
+  batchError.value = '';
+  try {
+    const resized = resizeMangaCanvases(settings.manga, batchWidth.value, batchHeight.value);
+    const before = JSON.parse(JSON.stringify(settings.manga.custom));
+    settings.manga.custom = resized;
+    resizeBackup.value = { before, after: JSON.stringify(resized) };
+    note.value = `已调整 ${rows.value.length} 套版式画布，横竖方向保留。`;
+  } catch (issue) {
+    batchError.value = issue instanceof Error ? issue.message : String(issue);
+  }
+}
+function undoResize(): void {
+  if (!canUndoResize.value || !resizeBackup.value) return;
+  settings.manga.custom = resizeBackup.value.before;
+  resizeBackup.value = undefined;
+  note.value = '已撤销本次批量画布调整。';
+}
 const quickSources = computed(() => ORIENTATIONS.flatMap(orientation => resolveLayouts({ ...settings.manga, disabled: [] }, orientation).map(layout => ({ ...layout, key: `${layout.id}:${orientation}` }))));
 const existingIds = computed(() => [...new Set([...ORIENTATIONS.flatMap(builtinIds), ...settings.manga.custom.map(layout => layout.id)])]);
 function openQuick(id?: string): void {
@@ -33,10 +57,16 @@ function saveQuick(layout: MangaCustomLayout): void {
   if (existingIds.value.includes(layout.id) && layout.id !== quickEditingId.value) return;
   const index = settings.manga.custom.findIndex(entry => entry.id === layout.id);
   if (layout.id === quickEditingId.value) {
-    const standard = canvasOf(orientationOf(layout.canvas?.width, layout.canvas?.height));
+    const orientation = orientationOf(layout.canvas?.width, layout.canvas?.height);
+    const standard = canvasOf(orientation);
+    const other = orientation === 'portrait' ? 'landscape' : 'portrait';
+    const previous = index >= 0 && settings.manga.custom[index][other]?.length
+      ? resolveLayouts({ ...settings.manga, disabled: [] }, other).find(entry => entry.id === layout.id) : undefined;
+    const size = layout.canvas ?? standard;
     // Standard sizes need no global canvas override; retain the other orientation.
     const standardSize = layout.canvas?.width === standard.width && layout.canvas.height === standard.height;
     layout = { ...(index >= 0 ? settings.manga.custom[index] : {}), ...layout };
+    if (previous) layout[other] = resizeMangaPanels(previous.panels, previous.canvas, { width: size.height, height: size.width });
     if (standardSize) delete layout.canvas;
   }
   if (index >= 0) settings.manga.custom.splice(index, 1, layout);
@@ -263,6 +293,19 @@ function resetBuiltin(id: string): void {
       <textarea v-model="settings.manga.selectionNotes" class="bbi-input bbi-manga-notes" spellcheck="false" placeholder="留空则只输出插件生成的清单"></textarea>
     </div>
 
+    <div class="bbi-manga-editor bbi-manga-item">
+      <strong>批量修改画布大小</strong>
+      <div class="bbi-manga-item-actions">
+        <label>宽度 <input v-model.number="batchWidth" class="bbi-input bbi-manga-size" type="number" min="64" max="8192" step="2" /></label>
+        <label>高度 <input v-model.number="batchHeight" class="bbi-input bbi-manga-size" type="number" min="64" max="8192" step="2" /></label>
+        <button type="button" class="bbi-manga-btn" :disabled="quickOpen || !!editing || !rows.length" @click="resizeAllCanvases">一键应用到全部版式（{{ rows.length }}）</button>
+        <button v-if="resizeBackup" type="button" class="bbi-manga-btn" :disabled="!canUndoResize" @click="undoResize">撤销本次调整</button>
+      </div>
+      <p class="bbi-manga-hint">作用于当前列表中的启用及停用版式，保留各自横竖方向，横版自动对调宽高；所有分格、内框和变形角点按比例缩放，读序、层级及框用途保留。完成当前版式编辑后即可批量调整。生图工作流及渠道方向尺寸须与调整后的画布一致。</p>
+      <p v-if="resizeBackup" class="bbi-manga-hint">修改或新增其他版式后，撤销本次调整按钮将失效。</p>
+      <p v-if="batchError" class="bbi-manga-error" role="alert">{{ batchError }}</p>
+    </div>
+
     <div v-for="row in rows" :key="row.id" class="bbi-manga-item">
       <div class="bbi-manga-item-head">
         <code>{{ row.id }}</code>
@@ -315,7 +358,7 @@ function resetBuiltin(id: string): void {
         版式 JSON：<code>id</code> 与内置同名即覆盖，新名字即追加；<code>portrait</code> / <code>landscape</code>
         各自是「格数组」，每格 <code>position</code> 为位置代号、<code>slots</code> 为槽位到
         <code>[y_min, x_min, y_max, x_max]</code> 的映射。坐标用 1088×1920 或 1920×1088 的内部画布，
-        已编译成以画布中心为原点的整数。自定义尺寸可添加 canvas: { width, height }，宽高为 64～8192 的偶数，并只填写对应方向。
+        已编译成以画布中心为原点的整数。自定义尺寸可添加 canvas: { width, height }，宽高为 64～8192 的偶数；同时保存横竖版时，另一方向自动对调宽高。
       </p>
       <textarea v-model="draft" class="bbi-input bbi-manga-code" spellcheck="false"></textarea>
       <div class="bbi-manga-item-actions">
@@ -395,6 +438,9 @@ function resetBuiltin(id: string): void {
   background: transparent;
   cursor: pointer;
 }
+.bbi-manga-size { width: 100px; }
+.bbi-manga-item-actions label { display: inline-flex; align-items: center; gap: 5px; }
+.bbi-manga-btn:disabled { opacity: 0.45; cursor: default; }
 .bbi-manga-editor {
   display: flex;
   flex-direction: column;
