@@ -28,6 +28,8 @@ const baseline = ref('');
 const current = computed(() => doc.value.panels[selected.value]);
 const activeRect = computed(() => current.value ? selectedSlot.value && current.value.slots[selectedSlot.value] ? slotRect(current.value, selectedSlot.value) : current.value : null);
 const slotLabels: Record<string,string> = { C:'内区', S:'主体', T:'顶部文字', B:'底部文字', TL:'左上文字', TR:'右上文字', BL:'左下文字', BR:'右下文字', L:'左人物', R:'右人物', O:'道具/音效', ML:'左侧文字', MR:'右侧文字', E:'有限越线' };
+const slotPickerOpen = ref(false);
+const availableSlots = computed(() => current.value ? Object.keys(editablePanel(current.value, canvas.value).slots).filter(key => !current.value!.slots[key]) : []);
 let slotSession: { before: string; undo: string[]; redo: string[] } | null = null;
 function confirmSlot(): void {
   slotSession = null; selectedSlot.value = '';
@@ -40,7 +42,7 @@ function cancelSlot(): void {
   }
   confirmSlot();
 }
-function selectPanel(index: number): void { confirmSlot(); selected.value = index; }
+function selectPanel(index: number): void { confirmSlot(); selected.value = index; slotPickerOpen.value = false; }
 function selectSlot(index: number, key: string): void {
   if (selected.value === index && selectedSlot.value === key) return;
   selectPanel(index);
@@ -60,6 +62,12 @@ function deleteSlot(): void {
 }
 function resetSlots(): void {
   if (current.value) edit(() => { current.value!.slots = editablePanel(current.value!, canvas.value).slots; current.value!.corners = current.value!.corners.F ? { F:current.value!.corners.F } : {}; selectedSlot.value = ''; });
+  slotPickerOpen.value = false;
+}
+function addSlot(key: string): void {
+  if (!current.value || !availableSlots.value.includes(key)) return;
+  edit(() => { current.value!.slots[key] = { ...editablePanel(current.value!, canvas.value).slots[key] }; });
+  selectSlot(selected.value, key);
 }
 function addAllSlots(): void {
   if (!current.value) return;
@@ -70,6 +78,7 @@ function addAllSlots(): void {
     }
     slotsPreview.value = true;
   });
+  slotPickerOpen.value = false;
 }
 function visibleSlots(panel: EditablePanel, index: number): { key: string; rect: PanelRect }[] {
   if (!slotsPreview.value) return [];
@@ -110,6 +119,7 @@ function restore(value: string): void {
   selected.value = Math.min(selected.value, doc.value.panels.length - 1);
   if (!current.value?.slots[selectedSlot.value]) selectedSlot.value = '';
   error.value = ''; discard.value = false;
+  slotPickerOpen.value = false;
 }
 function undo(): void { confirmSlot(); const before = undoStack.value.pop(); if (before) { redoStack.value.push(snapshot()); restore(before); } }
 function redo(): void { confirmSlot(); const after = redoStack.value.pop(); if (after) { undoStack.value.push(snapshot()); restore(after); } }
@@ -326,8 +336,13 @@ onMounted(() => {
             <label>{{ selectedSlot ? `内框 ${selectedSlot} 用途说明` : '外框 F 用途说明' }}
               <textarea :value="current.slotNotes?.[selectedSlot || 'F'] ?? ''" aria-label="当前框用途说明" rows="3" :placeholder="selectedSlot ? '例如：半身主体，侧重人物动作与反应' : '例如：交代场景和人物关系的开场格'" @input="changeSlotNote"></textarea>
             </label>
-            <p class="hint">随版式保存，发送给 LLM 帮助分配本框内容；留空沿用默认用途。说明本身不作为画面文字。</p>
             <div class="slot-list"><button type="button" :class="{active:!selectedSlot}" @click="confirmSlot">外框 F</button><button v-for="(_,key) in current.slots" :key="key" type="button" :class="{active:selectedSlot===key}" @click="selectSlot(selected,String(key))">{{ key }} {{ slotLabels[key] ?? '' }}</button></div>
+            <div class="slot-picker">
+              <button type="button" :aria-expanded="slotPickerOpen" :disabled="!availableSlots.length" @click="slotPickerOpen=!slotPickerOpen">添加内框 {{ slotPickerOpen ? '▴' : '▾' }}</button>
+              <div v-if="slotPickerOpen && availableSlots.length" class="slot-options" role="group" aria-label="可添加的内框">
+                <button v-for="key in availableSlots" :key="key" type="button" @click="addSlot(key)">{{ key }} {{ slotLabels[key] }}</button>
+              </div>
+            </div>
             <label v-for="field in (['x','y','width','height'] as const)" :key="field">{{ {x:'左边距',y:'上边距',width:'宽度',height:'高度'}[field] }}<input :value="activeRect?.[field]" :aria-label="`${selectedSlot ? '槽位' : '分格'}${field}`" type="number" step="1" @change="changeRect(field,$event)" /></label>
           </template>
           <p v-else class="hint">添加或选择一格，编辑精确尺寸。</p>
@@ -342,6 +357,7 @@ onMounted(() => {
 
 <style scoped>
 .editor-actions{margin-left:auto;flex-wrap:nowrap}.editor-actions button{white-space:nowrap}
+.slot-picker{grid-column:1/-1}.slot-picker>button{width:100%}.slot-options{display:flex;flex-direction:column;gap:3px;max-height:210px;overflow-y:auto;margin-top:5px;padding:5px;border:1px solid #8886;border-radius:6px}.slot-options button{text-align:left;flex:none}
 .slot-actions{grid-column:1/-1;padding:8px;border:1px solid #2675cf66;border-radius:6px}.slot-actions .hint{margin-bottom:0}
 .manga-designer{width:min(1140px,96vw);max-height:94vh;overflow:auto;background:var(--bbi-surface,#fff);color:var(--bbi-ink,#222);border-radius:12px;padding:18px;box-sizing:border-box;box-shadow:0 16px 64px #0005;outline:none;font-size:13px}
 header,footer,.canvas-controls,.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}header{justify-content:space-between;font-size:17px;margin-bottom:14px}footer{justify-content:flex-end;margin-top:14px;border-top:1px solid #8884;padding-top:12px}.canvas-controls label{display:flex;align-items:center;gap:5px}.canvas-controls input{width:90px}.designer-body{display:grid;grid-template-columns:180px minmax(180px,1fr) 180px;gap:16px;margin-top:12px}.tools,.properties{display:flex;flex-direction:column;gap:9px}.tools label:not(.check),.properties label{display:flex;flex-direction:column;gap:5px}.check{display:flex;gap:5px;align-items:center}input,textarea,select{box-sizing:border-box;min-width:0;max-width:100%;padding:6px;border:1px solid #8886;border-radius:5px;color:inherit;background:transparent;font:inherit}button{border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;padding:6px 9px;cursor:pointer;font:inherit}button:disabled{opacity:.4;cursor:default}button.active,button.primary{background:#2675cf;color:white}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.layout-canvas:focus-visible{outline:2px solid #2675cf;outline-offset:2px}.hint{font-size:12px;line-height:1.6;opacity:.75;margin:7px 0}.canvas-area{background:#8881;border:1px solid #8884;padding:12px;display:flex;flex-direction:column;align-items:center;min-width:0}.layout-canvas{display:block;height:auto;overflow:visible;touch-action:none;user-select:none;box-shadow:0 2px 10px #0003}.panel,.slot{cursor:move}.slot-list{display:flex;flex-wrap:wrap;gap:4px;max-height:145px;overflow:auto}.slot-list button{font-size:11px;padding:4px 5px}.panel text{pointer-events:none}.error{color:#b3261e}

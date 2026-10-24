@@ -29,6 +29,30 @@ function editor(props: Record<string,unknown> = {}) {
 }
 
 describe('版式编辑器 Ctrl 角点交互',()=>{
+  it('按类型添加单个内框，自动选中且可撤销、保存，重复及未知类型不改动版式',()=>{
+    const {state,events,close}=editor();state.add();
+    expect(state.doc.value.panels[1].slots).toEqual({});
+    state.slotPickerOpen.value=true;state.slotsPreview.value=false;state.addSlot('TR');
+    expect(Object.keys(state.doc.value.panels[1].slots)).toEqual(['TR']);
+    expect(state.selectedSlot.value).toBe('TR');
+    expect(state.slotsPreview.value).toBe(true);
+    expect(state.slotPickerOpen.value).toBe(false);
+    expect(state.availableSlots.value).not.toContain('TR');
+    state.changeRect('x',{target:{value:350}});state.changeSlotNote({target:{value:'右上对白'}});state.confirmSlot();
+    const kept=JSON.stringify(state.doc.value.panels[1]);const history=state.undoStack.value.length;
+    state.addSlot('TR');state.addSlot('UNKNOWN');
+    expect(JSON.stringify(state.doc.value.panels[1])).toBe(kept);
+    expect(state.undoStack.value.length).toBe(history);
+    state.addSlot('S');state.confirmSlot();state.undo();
+    expect(JSON.stringify(state.doc.value.panels[1])).toBe(kept);
+    state.redo();state.save();
+    const saved=events.at(-1)?.[1];
+    expect(Object.keys(saved.portrait?.[1].slots ?? saved.landscape?.[1].slots)).toEqual(['F','TR','S']);
+    expect((saved.portrait ?? saved.landscape)[1].slotNotes.TR).toBe('右上对白');
+    state.slotPickerOpen.value=true;state.selectPanel(0);
+    expect(state.slotPickerOpen.value).toBe(false);
+    close();
+  });
   it('新增分格只带外框，补齐槽位是显式操作并可撤销、保存后读回',()=>{
     const {state,events,close}=editor();
     state.add();
