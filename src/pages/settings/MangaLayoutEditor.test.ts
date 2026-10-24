@@ -6,27 +6,66 @@ import { quadPoints } from '@/manga/editor';
 // 在 Vue 活跃组件中执行实际 setup/指针处理器；画布只替换测量与捕获接口。
 function editor(props: Record<string,unknown> = {}) {
   let state: any;
+  const events: any[][] = [];
   const renderer = createRenderer<any, any>({
     createElement:()=>({}), createText:()=>({}), createComment:()=>({}),
     setText:()=>{}, setElementText:()=>{}, patchProp:()=>{}, insert:()=>{}, remove:()=>{},
     parentNode:()=>null, nextSibling:()=>null,
   });
   const app = renderer.createApp(defineComponent({ setup() {
-    state = (Editor as any).setup({ sources:[], existingIds:[], ...props }, { emit:()=>{}, expose:()=>{} });
+    state = (Editor as any).setup({ sources:[], existingIds:[], ...props }, { emit:(...args:any[])=>events.push(args), expose:()=>{} });
     return ()=>null;
   } }));
   app.provide(ssrContextKey, {});
   app.mount({});
   state.preset(1024,1024);
   state.add();
+  state.resetSlots();
   state.svg.value = {
     getBoundingClientRect:()=>({left:0,top:0,width:1024,height:1024}),
     setPointerCapture:()=>{}, hasPointerCapture:()=>false,
   };
-  return { state, close:()=>app.unmount() };
+  return { state, events, close:()=>app.unmount() };
 }
 
 describe('版式编辑器 Ctrl 角点交互',()=>{
+  it('新增分格只带外框，补齐槽位是显式操作并可撤销、保存后读回',()=>{
+    const {state,events,close}=editor();
+    state.add();
+    expect(state.doc.value.panels[1].slots).toEqual({});
+    state.save();
+    const empty=events.at(-1)?.[1];
+    expect(Object.keys(empty.portrait?.[1].slots ?? empty.landscape?.[1].slots)).toEqual(['F']);
+    state.slotsPreview.value=false;
+    state.addAllSlots();
+    expect(Object.keys(state.doc.value.panels[1].slots).sort()).toEqual(['C','S','T','B','TL','TR','BL','BR','ML','MR','L','R','O'].sort());
+    expect(state.slotsPreview.value).toBe(true);
+    state.undo();
+    expect(state.doc.value.panels[1].slots).toEqual({});
+    state.redo();state.save();
+    const saved=events.at(-1)?.[1];
+    const loaded=editor({sources:[{...saved,key:'saved',panels:saved.portrait ?? saved.landscape}]});
+    loaded.state.sourceKey.value='saved';loaded.state.loadSource();
+    expect(Object.keys(loaded.state.doc.value.panels[1].slots).sort()).toEqual(Object.keys(state.doc.value.panels[1].slots).sort());
+    loaded.close();close();
+  });
+  it('补齐仅作用于选中分格，保留已有内框形变及说明，重复点击不增加撤销记录',()=>{
+    const {state,close}=editor();
+    state.selectSlot(0,'TR');state.changeSlotNote({target:{value:'右上对白'}});
+    const points=quadPoints(state.doc.value.panels[0],'TR');
+    const event={button:0,pointerId:1,clientX:points[2][0],clientY:points[2][1],ctrlKey:true,altKey:false};
+    state.begin(event,0,'se','TR');state.move({...event,clientX:event.clientX-25,clientY:event.clientY+20});state.end(event);state.confirmSlot();
+    state.selectSlot(0,'BL');state.deleteSlot();state.confirmSlot();
+    const kept=JSON.stringify({slot:state.doc.value.panels[0].slots.TR,corners:state.doc.value.panels[0].corners,notes:state.doc.value.panels[0].slotNotes});
+    state.add();const other=JSON.stringify(state.doc.value.panels[1]);state.selectPanel(0);
+    state.addAllSlots();
+    expect(state.doc.value.panels[0].slots.BL).toBeDefined();
+    expect(JSON.stringify({slot:state.doc.value.panels[0].slots.TR,corners:state.doc.value.panels[0].corners,notes:state.doc.value.panels[0].slotNotes})).toBe(kept);
+    expect(JSON.stringify(state.doc.value.panels[1])).toBe(other);
+    const history=state.undoStack.value.length;state.addAllSlots();
+    expect(state.undoStack.value.length).toBe(history);
+    close();
+  });
   it('内外框用途独立保存；取消恢复本次内框说明，确认保留，清空可撤销',()=>{
     const {state,close}=editor();
     const change=(value:string)=>state.changeSlotNote({target:{value}});

@@ -607,6 +607,7 @@ function applyAssist() {
                 :aria-label="clip.label"
               />
             </div>
+            <p v-if="active.simple.template === 'moss'" class="bbi-field-hint">文本编码器类型：moss_image；VAE 请选择 Flux2 VAE。</p>
           </section>
 
           <section class="wf-group">
@@ -671,7 +672,7 @@ function applyAssist() {
                 <span>Guidance</span>
                 <input class="bbi-input" type="number" v-model.number="active.simple.guidance" min="1" max="10" step="0.1" />
               </label>
-              <label class="wf-param" v-if="active.simple.template === 'anima'" title="ModelSamplingAuraFlow 的 shift">
+              <label class="wf-param" v-if="active.simple.template === 'anima' || active.simple.template === 'moss'" title="ModelSamplingAuraFlow 的 shift">
                 <span>Shift</span>
                 <input class="bbi-input" type="number" v-model.number="active.simple.shift" min="0" max="10" step="0.1" />
               </label>

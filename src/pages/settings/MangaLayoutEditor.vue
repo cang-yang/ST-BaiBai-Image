@@ -61,6 +61,16 @@ function deleteSlot(): void {
 function resetSlots(): void {
   if (current.value) edit(() => { current.value!.slots = editablePanel(current.value!, canvas.value).slots; current.value!.corners = current.value!.corners.F ? { F:current.value!.corners.F } : {}; selectedSlot.value = ''; });
 }
+function addAllSlots(): void {
+  if (!current.value) return;
+  edit(() => {
+    const panel = current.value!;
+    for (const [key, rect] of Object.entries(editablePanel(panel, canvas.value).slots)) {
+      if (!panel.slots[key]) panel.slots[key] = { ...rect };
+    }
+    slotsPreview.value = true;
+  });
+}
 function visibleSlots(panel: EditablePanel, index: number): { key: string; rect: PanelRect }[] {
   if (!slotsPreview.value) return [];
   return Object.keys(panel.slots)
@@ -126,7 +136,9 @@ function preset(width: number, height: number): void { canvasWidth.value = width
 function add(): void {
   edit(() => {
     const offset = (doc.value.panels.length % 5) * .04;
-    doc.value.panels.push({...editablePanel(fitRect({ x: doc.value.width * (.08 + offset), y: doc.value.height * (.08 + offset), width: doc.value.width * .55, height: doc.value.height * .3 }, canvas.value), canvas.value), layer:Math.max(-1,...doc.value.panels.map((p,i)=>p.layer ?? i))+1});
+    const panel = editablePanel(fitRect({ x: doc.value.width * (.08 + offset), y: doc.value.height * (.08 + offset), width: doc.value.width * .55, height: doc.value.height * .3 }, canvas.value), canvas.value);
+    panel.slots = {};
+    doc.value.panels.push({...panel, layer:Math.max(-1,...doc.value.panels.map((p,i)=>p.layer ?? i))+1});
     selectPanel(doc.value.panels.length - 1);
   });
 }
@@ -251,7 +263,14 @@ onMounted(() => {
 <template>
   <ModalMask :open="true" top-layer @close="requestClose">
     <section ref="dialog" class="manga-designer" role="dialog" aria-modal="true" aria-label="快捷自定义版式" tabindex="-1" @keydown="keydown">
-      <header><strong>{{ editingId ? '可视化编辑版式' : '快捷自定义版式' }}</strong><button type="button" aria-label="关闭编辑器" @click="requestClose">✕</button></header>
+      <header>
+        <strong>{{ editingId ? '可视化编辑版式' : '快捷自定义版式' }}</strong>
+        <div class="inline editor-actions">
+          <button type="button" @click="requestClose">取消</button>
+          <button type="button" class="primary" @click="save">{{ editingId && doc.id.trim() === editingId ? '保存版式修改' : '保存为自定义版式' }}</button>
+          <button type="button" aria-label="关闭编辑器" @click="requestClose">✕</button>
+        </div>
+      </header>
       <div class="canvas-controls">
         <label>画布宽 <input v-model.number="canvasWidth" aria-label="画布宽" type="number" min="64" max="8192" step="2" /></label>
         <label>画布高 <input v-model.number="canvasHeight" aria-label="画布高" type="number" min="64" max="8192" step="2" /></label>
@@ -266,6 +285,7 @@ onMounted(() => {
           <button type="button" @click="add">＋ 新增分格</button>
           <button type="button" :disabled="!current" @click="duplicate">复制选中分格</button>
           <button type="button" :disabled="!current" @click="remove">删除选中分格</button>
+          <button type="button" :disabled="!current" title="为选中分格补齐所有默认内框，保留已有槽位的位置、形状和说明" @click="addAllSlots">一键添加所有槽位</button>
           <div class="inline"><button type="button" :disabled="!undoStack.length" @click="undo">撤销</button><button type="button" :disabled="!redoStack.length" @click="redo">重做</button></div>
           <label class="check"><input v-model="snap" type="checkbox" />对齐吸附</label>
           <label class="check"><input v-model="slotsPreview" type="checkbox" />显示可编辑槽位</label>
@@ -299,7 +319,7 @@ onMounted(() => {
             <strong>第 {{ selected+1 }} 格 · {{ selectedSlot ? `${selectedSlot} ${slotLabels[selectedSlot] ?? '槽位'}` : '外框 F' }}</strong>
             <div v-if="selectedSlot" class="slot-actions">
               <div class="inline"><button type="button" class="primary" @click="confirmSlot">确定内框</button><button type="button" @click="cancelSlot">取消内框修改</button></div>
-              <p class="hint">确定后保留内框并返回外框编辑；取消恢复本次内框修改。完成整页后请点击底部保存按钮。切换选中项会保留当前修改。</p>
+              <p class="hint">确定后保留内框并返回外框编辑；取消恢复本次内框修改。完成整页后请点击右上角保存按钮。切换选中项会保留当前修改。</p>
             </div>
             <button type="button" :disabled="!selectedSlot" @click="deleteSlot">删除选中槽位</button>
             <button type="button" @click="resetSlots">恢复本格默认槽位</button>
@@ -316,12 +336,12 @@ onMounted(() => {
       </div>
       <p v-if="error" role="alert" class="error">{{ error }}</p>
       <footer v-if="discard"><span>放弃未保存的修改？</span><button type="button" @click="discard=false">继续编辑</button><button type="button" @click="emit('close')">放弃修改</button></footer>
-      <footer v-else><button type="button" @click="requestClose">取消</button><button type="button" class="primary" @click="save">{{ editingId && doc.id.trim() === editingId ? '保存版式修改' : '保存为自定义版式' }}</button></footer>
     </section>
   </ModalMask>
 </template>
 
 <style scoped>
+.editor-actions{margin-left:auto;flex-wrap:nowrap}.editor-actions button{white-space:nowrap}
 .slot-actions{grid-column:1/-1;padding:8px;border:1px solid #2675cf66;border-radius:6px}.slot-actions .hint{margin-bottom:0}
 .manga-designer{width:min(1140px,96vw);max-height:94vh;overflow:auto;background:var(--bbi-surface,#fff);color:var(--bbi-ink,#222);border-radius:12px;padding:18px;box-sizing:border-box;box-shadow:0 16px 64px #0005;outline:none;font-size:13px}
 header,footer,.canvas-controls,.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}header{justify-content:space-between;font-size:17px;margin-bottom:14px}footer{justify-content:flex-end;margin-top:14px;border-top:1px solid #8884;padding-top:12px}.canvas-controls label{display:flex;align-items:center;gap:5px}.canvas-controls input{width:90px}.designer-body{display:grid;grid-template-columns:180px minmax(180px,1fr) 180px;gap:16px;margin-top:12px}.tools,.properties{display:flex;flex-direction:column;gap:9px}.tools label:not(.check),.properties label{display:flex;flex-direction:column;gap:5px}.check{display:flex;gap:5px;align-items:center}input,textarea,select{box-sizing:border-box;min-width:0;max-width:100%;padding:6px;border:1px solid #8886;border-radius:5px;color:inherit;background:transparent;font:inherit}button{border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;padding:6px 9px;cursor:pointer;font:inherit}button:disabled{opacity:.4;cursor:default}button.active,button.primary{background:#2675cf;color:white}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.layout-canvas:focus-visible{outline:2px solid #2675cf;outline-offset:2px}.hint{font-size:12px;line-height:1.6;opacity:.75;margin:7px 0}.canvas-area{background:#8881;border:1px solid #8884;padding:12px;display:flex;flex-direction:column;align-items:center;min-width:0}.layout-canvas{display:block;height:auto;overflow:visible;touch-action:none;user-select:none;box-shadow:0 2px 10px #0003}.panel,.slot{cursor:move}.slot-list{display:flex;flex-wrap:wrap;gap:4px;max-height:145px;overflow:auto}.slot-list button{font-size:11px;padding:4px 5px}.panel text{pointer-events:none}.error{color:#b3261e}
