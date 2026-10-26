@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue';
 import ModalMask from '@/components/ModalMask.vue';
-import { canvasOf, normalizeCanvas, orientationOf, parseCustomLayout, type MangaCustomLayout, type ResolvedLayout } from '@/manga/layouts';
+import { canvasOf, normalizeCanvas, orientationOf, parseCustomLayout, slotType, type MangaCustomLayout, type ResolvedLayout } from '@/manga/layouts';
 import { clamp, deformCorner, editablePanel, fitRect, MIN_PANEL, panelRect, quadPoints, saveEditedPanel, setSlotRect, slotRect, snapRect, type EditablePanel, type PanelRect } from '@/manga/editor';
 
 const props = defineProps<{ sources: (ResolvedLayout & { key: string })[]; existingIds: string[]; initialKey?: string; editingId?: string }>();
@@ -22,6 +22,11 @@ const error = ref('');
 const discard = ref(false);
 const dialog = ref<HTMLElement>();
 const svg = ref<SVGSVGElement>();
+const canvasViewport = ref<HTMLElement>();
+const canvasZoom = ref(1);
+const quickEdit = ref<{index:number; key:string} | null>(null);
+const quickDraft = ref('');
+const quickField = ref<HTMLTextAreaElement>();
 const canvasWidth = ref(1088), canvasHeight = ref(1920);
 const undoStack = ref<string[]>([]), redoStack = ref<string[]>([]);
 const baseline = ref('');
@@ -29,7 +34,7 @@ const current = computed(() => doc.value.panels[selected.value]);
 const activeRect = computed(() => current.value ? selectedSlot.value && current.value.slots[selectedSlot.value] ? slotRect(current.value, selectedSlot.value) : current.value : null);
 const slotLabels: Record<string,string> = { C:'内区', S:'主体', T:'顶部文字', B:'底部文字', TL:'左上文字', TR:'右上文字', BL:'左下文字', BR:'右下文字', L:'左人物', R:'右人物', O:'道具/音效', ML:'左侧文字', MR:'右侧文字', E:'有限越线' };
 const slotPickerOpen = ref(false);
-const availableSlots = computed(() => current.value ? Object.keys(editablePanel(current.value, canvas.value).slots).filter(key => !current.value!.slots[key]) : []);
+const availableSlots = computed(() => current.value ? Object.keys(editablePanel(current.value, canvas.value).slots) : []);
 let slotSession: { before: string; undo: string[]; redo: string[] } | null = null;
 function confirmSlot(): void {
   slotSession = null; selectedSlot.value = '';
@@ -66,7 +71,14 @@ function resetSlots(): void {
 }
 function addSlot(key: string): void {
   if (!current.value || !availableSlots.value.includes(key)) return;
-  edit(() => { current.value!.slots[key] = { ...editablePanel(current.value!, canvas.value).slots[key] }; });
+  const base=key;
+  let suffix=2;
+  while (current.value.slots[key]) key=`${base}_${suffix++}`;
+  edit(() => {
+    const panel=current.value!, template=slotRect(editablePanel(panel,canvas.value),base);
+    const offset=24*Object.keys(panel.slots).filter(name=>slotType(name)===base).length;
+    setSlotRect(panel,key,fitRect({...template,x:template.x+offset,y:template.y+offset},canvas.value,1));
+  });
   selectSlot(selected.value, key);
 }
 function addAllSlots(): void {
@@ -173,7 +185,49 @@ function changeSlotNote(event: Event): void {
   }, true);
 }
 
-let gesture: { pointerId: number; x: number; y: number; rect: PanelRect; before: string; handle: string; quad:number[][]; deform:boolean } | null = null;
+function frameDescription(panel: EditablePanel, key: string): string { return panel.slotNotes?.[key] ?? ''; }
+function openDescription(index: number, key: string): void {
+  if (gesture) return;
+  selectSlot(index,key==='F'?'':key);
+  quickEdit.value={index,key};quickDraft.value=frameDescription(doc.value.panels[index],key);
+  void nextTick(()=>quickField.value?.focus());
+}
+function saveQuickDescription(): void {
+  if (!quickEdit.value) return;
+  const {index,key}=quickEdit.value;
+  edit(()=>{
+    const panel=doc.value.panels[index];
+    if (quickDraft.value) (panel.slotNotes ??= {})[key]=quickDraft.value;
+    else if (panel.slotNotes) delete panel.slotNotes[key];
+  },true);
+  quickEdit.value=null;
+}
+function previewDescription(panel: EditablePanel, key: string): string {
+  const text=frameDescription(panel,key).replace(/\s+/g,' ').trim();
+  return text.length>80?text.slice(0,80)+'…':text;
+}
+function quickKeydown(event: KeyboardEvent): void {
+  if (event.key!=='Tab') return;
+  const items=[...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('button,textarea')];
+  const root=dialog.value?.getRootNode() as Document | ShadowRoot | undefined;
+  const next=event.shiftKey && root?.activeElement===items[0] ? items.at(-1) : !event.shiftKey && root?.activeElement===items.at(-1) ? items[0] : undefined;
+  if (next) { event.preventDefault();next.focus(); }
+}
+
+let gesture: { pointerId: number; x: number; y: number; clientX:number; clientY:number; dragging:boolean; rect: PanelRect; before: string; handle: string; quad:number[][]; deform:boolean } | null = null;
+function zoomCanvas(event: WheelEvent): void {
+  if (!event.ctrlKey || !event.deltaY) return;
+  event.preventDefault();event.stopPropagation();
+  if (gesture || !svg.value || !canvasViewport.value) return;
+  const viewport=canvasViewport.value, before=svg.value.getBoundingClientRect();
+  const x=(event.clientX-before.left)/before.width, y=(event.clientY-before.top)/before.height;
+  const delta=event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?viewport.clientHeight:1);
+  canvasZoom.value=clamp(canvasZoom.value*Math.exp(-delta*.002),.25,4);
+  void nextTick(()=>{
+    const after=svg.value?.getBoundingClientRect();
+    if (after) { viewport.scrollLeft+=after.left+x*after.width-event.clientX;viewport.scrollTop+=after.top+y*after.height-event.clientY; }
+  });
+}
 function point(event: PointerEvent): { x: number; y: number } {
   const rect = svg.value!.getBoundingClientRect();
   return { x: (event.clientX - rect.left) / rect.width * doc.value.width, y: (event.clientY - rect.top) / rect.height * doc.value.height };
@@ -181,12 +235,16 @@ function point(event: PointerEvent): { x: number; y: number } {
 function begin(event: PointerEvent, index: number, handle = '', slot = ''): void {
   if (event.button !== 0 || gesture) return;
   selectSlot(index, slot);
-  gesture = { pointerId: event.pointerId, ...point(event), rect: { ...activeRect.value! }, before: snapshot(), handle, quad:quadPoints(current.value!,slot || 'F'), deform:event.ctrlKey && handle.length===2 };
-  svg.value!.setPointerCapture(event.pointerId);
+  gesture = { pointerId: event.pointerId, ...point(event), clientX:event.clientX, clientY:event.clientY, dragging:false, rect: { ...activeRect.value! }, before: snapshot(), handle, quad:quadPoints(current.value!,slot || 'F'), deform:event.ctrlKey && handle.length===2 };
 }
 function move(event: PointerEvent): void {
   if (!gesture || event.pointerId !== gesture.pointerId) return;
   const p = point(event), g = gesture, dx = p.x - g.x, dy = p.y - g.y;
+  // Delay capture until a real drag so stationary clicks reach the frame's dblclick handler.
+  if (!g.dragging) {
+    if (Math.hypot(event.clientX-g.clientX,event.clientY-g.clientY)<3) return;
+    g.dragging=true;svg.value!.setPointerCapture(event.pointerId);
+  }
   const minimum = selectedSlot.value ? 1 : MIN_PANEL;
   if (g.deform) {
     const index = ['nw','ne','se','sw'].indexOf(g.handle);
@@ -227,6 +285,7 @@ function requestClose(): void {
   else emit('close');
 }
 function keydown(event: KeyboardEvent): void {
+  if (quickEdit.value) return;
   if (event.key === 'Tab' && dialog.value) {
     const items = [...dialog.value.querySelectorAll<HTMLElement>('button:not(:disabled),input,textarea,select,[tabindex="0"]')];
     const root = dialog.value.getRootNode() as Document | ShadowRoot;
@@ -307,26 +366,30 @@ onMounted(() => {
           <p class="hint">{{ current ? `当前第 ${selectedLayer+1} / ${doc.panels.length} 层（数字越大越靠前）。` : '' }}层级控制重叠遮挡，不改变读序；遮挡关系自动写入生图提示词。</p>
         </aside>
         <div class="canvas-area">
-          <svg ref="svg" class="layout-canvas" :viewBox="`0 0 ${doc.width} ${doc.height}`" :style="{ aspectRatio: `${doc.width}/${doc.height}`, width: `min(100%, ${62*doc.width/doc.height}vh)` }" role="img" aria-label="版式画布" tabindex="0" @pointermove="move" @pointerup="end($event)" @pointercancel="end($event,true)" @lostpointercapture="end($event,true)">
+          <div ref="canvasViewport" class="canvas-viewport" aria-label="画布缩放区域" @wheel.capture="zoomCanvas">
+          <svg ref="svg" class="layout-canvas" :viewBox="`0 0 ${doc.width} ${doc.height}`" :style="{ aspectRatio: `${doc.width}/${doc.height}`, width: `min(${100*canvasZoom}%, ${62*doc.width/doc.height*canvasZoom}vh)` }" role="img" aria-label="版式画布" tabindex="0" @pointermove="move" @pointerup="end($event)" @pointercancel="end($event,true)" @lostpointercapture="end($event,true)">
             <rect :width="doc.width" :height="doc.height" fill="white" @pointerdown="selectPanel(-1)" />
-            <g v-for="{ rect: r, index: i } in drawn" :key="i" class="panel" :class="{ selected: i===selected }" @pointerdown.stop.prevent="begin($event,i)">
+            <g v-for="{ rect: r, index: i } in drawn" :key="i" class="panel" :class="{ selected: i===selected }" @pointerdown.stop="begin($event,i)" @dblclick.stop.prevent="openDescription(i,'F')">
               <polygon :points="polygon(r,'F')" :fill="i===selected ? '#dcecff' : '#f1f2f4'" :stroke="i===selected ? '#2675cf' : '#333'" stroke-width="2" vector-effect="non-scaling-stroke" />
-              <g v-for="s in visibleSlots(r,i)" :key="s.key" class="slot" :data-slot="s.key" @pointerdown.stop.prevent="begin($event,i,'',s.key)">
-                <polygon :points="polygon(r,s.key)" :fill="s.key==='T' ? '#e5ba6638' : '#50a18a18'" :stroke="i===selected && s.key===selectedSlot ? '#df7827' : s.key==='T' ? '#b48733' : '#50a18a'" :stroke-width="i===selected && s.key===selectedSlot ? 2 : 1" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" />
+              <foreignObject v-if="previewDescription(r,'F')" :x="r.x+6" :y="r.y+doc.width*.04" :width="Math.max(1,r.width-12)" :height="Math.max(1,Math.min(r.height-doc.width*.04,doc.width*.055))" class="frame-description"><div :style="{fontSize:`${doc.width*.018}px`}" :title="frameDescription(r,'F')">{{ previewDescription(r,'F') }}</div></foreignObject>
+              <g v-for="s in visibleSlots(r,i)" :key="s.key" class="slot" :data-slot="s.key" @pointerdown.stop="begin($event,i,'',s.key)" @dblclick.stop.prevent="openDescription(i,s.key)">
+                <polygon :points="polygon(r,s.key)" :fill="slotType(s.key)==='T' ? '#e5ba6638' : '#50a18a18'" :stroke="i===selected && s.key===selectedSlot ? '#df7827' : slotType(s.key)==='T' ? '#b48733' : '#50a18a'" :stroke-width="i===selected && s.key===selectedSlot ? 2 : 1" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" />
                 <text :x="s.rect.x+5" :y="s.rect.y+doc.width*.025" :font-size="doc.width*.021" fill="#575c62">{{ s.key }}</text>
+                <foreignObject v-if="previewDescription(r,s.key)" :x="s.rect.x+6" :y="s.rect.y+doc.width*.032" :width="Math.max(1,s.rect.width-12)" :height="Math.max(1,Math.min(s.rect.height-doc.width*.032,doc.width*.055))" class="frame-description"><div :style="{fontSize:`${doc.width*.018}px`}" :title="frameDescription(r,s.key)">{{ previewDescription(r,s.key) }}</div></foreignObject>
               </g>
               <text :x="r.x+8" :y="r.y+doc.width*.032" :font-size="doc.width*.026" fill="#164b83">{{ i+1 }}</text>
             </g>
               <template v-if="current && activeRect"><rect v-for="h in handles()" :key="h.name" class="resize-handle" :data-ctrl-deform="h.name.length===2" :data-handle="h.name" :rx="h.name.length===2 ? doc.width*.009 : 0" :x="h.x-doc.width*.009" :y="h.y-doc.width*.009" :width="doc.width*.018" :height="doc.width*.018" :fill="selectedSlot ? '#df7827' : '#2675cf'" stroke="white" vector-effect="non-scaling-stroke" :style="{cursor:`${h.name}-resize`}" :aria-label="`${h.name} 控制点`" @pointerdown.stop.prevent="begin($event,selected,h.name,selectedSlot)" /></template>
           </svg>
-          <p class="hint">{{ doc.width }}×{{ doc.height }} · {{ doc.panels.length }} 格 · 黄色：顶部字区 T · 绿色：主体 S<br />槽位可单独移动、缩放和删除；移动外框时槽位跟随，保存后保留编辑结果。</p>
+          </div>
+          <p class="hint">{{ doc.width }}×{{ doc.height }} · {{ doc.panels.length }} 格 · 缩放 {{ Math.round(canvasZoom*100) }}% · Ctrl＋滚轮缩放，双击框编辑说明<br />槽位可单独移动、缩放和删除；移动外框时槽位跟随，保存后保留编辑结果。</p>
         </div>
         <aside class="properties">
           <label>版式 ID<input :value="doc.id" aria-label="版式 ID" @change="changeText('id',$event)" /></label>
           <label>名称<input :value="doc.label" aria-label="版式名称" @change="changeText('label',$event)" /></label>
           <label>用途说明<textarea :value="doc.usage" aria-label="版式用途" rows="3" @change="changeText('usage',$event)"></textarea></label>
           <template v-if="current">
-            <strong>第 {{ selected+1 }} 格 · {{ selectedSlot ? `${selectedSlot} ${slotLabels[selectedSlot] ?? '槽位'}` : '外框 F' }}</strong>
+            <strong>第 {{ selected+1 }} 格 · {{ selectedSlot ? `${selectedSlot} ${slotLabels[slotType(selectedSlot)] ?? '槽位'}` : '外框 F' }}</strong>
             <div v-if="selectedSlot" class="slot-actions">
               <div class="inline"><button type="button" class="primary" @click="confirmSlot">确定内框</button><button type="button" @click="cancelSlot">取消内框修改</button></div>
               <p class="hint">确定后保留内框并返回外框编辑；取消恢复本次内框修改。完成整页后请点击右上角保存按钮。切换选中项会保留当前修改。</p>
@@ -336,7 +399,7 @@ onMounted(() => {
             <label>{{ selectedSlot ? `内框 ${selectedSlot} 用途说明` : '外框 F 用途说明' }}
               <textarea :value="current.slotNotes?.[selectedSlot || 'F'] ?? ''" aria-label="当前框用途说明" rows="3" :placeholder="selectedSlot ? '例如：半身主体，侧重人物动作与反应' : '例如：交代场景和人物关系的开场格'" @input="changeSlotNote"></textarea>
             </label>
-            <div class="slot-list"><button type="button" :class="{active:!selectedSlot}" @click="confirmSlot">外框 F</button><button v-for="(_,key) in current.slots" :key="key" type="button" :class="{active:selectedSlot===key}" @click="selectSlot(selected,String(key))">{{ key }} {{ slotLabels[key] ?? '' }}</button></div>
+            <div class="slot-list"><button type="button" :class="{active:!selectedSlot}" @click="confirmSlot">外框 F</button><button v-for="(_,key) in current.slots" :key="key" type="button" :class="{active:selectedSlot===key}" @click="selectSlot(selected,String(key))">{{ key }} {{ slotLabels[slotType(String(key))] ?? '' }}</button></div>
             <div class="slot-picker">
               <button type="button" :aria-expanded="slotPickerOpen" :disabled="!availableSlots.length" @click="slotPickerOpen=!slotPickerOpen">添加内框 {{ slotPickerOpen ? '▴' : '▾' }}</button>
               <div v-if="slotPickerOpen && availableSlots.length" class="slot-options" role="group" aria-label="可添加的内框">
@@ -351,15 +414,23 @@ onMounted(() => {
       </div>
       <p v-if="error" role="alert" class="error">{{ error }}</p>
       <footer v-if="discard"><span>放弃未保存的修改？</span><button type="button" @click="discard=false">继续编辑</button><button type="button" @click="emit('close')">放弃修改</button></footer>
+      <div v-if="quickEdit" class="quick-mask" @mousedown.self="quickEdit=null">
+        <section class="quick-dialog" role="dialog" aria-modal="true" aria-label="快速编辑框说明" @keydown.stop="quickKeydown" @keydown.esc.prevent="quickEdit=null">
+          <header><strong>第 {{ quickEdit.index+1 }} 格 · {{ quickEdit.key }} 框说明</strong><button type="button" aria-label="关闭快速编辑" @click="quickEdit=null">✕</button></header>
+          <textarea ref="quickField" v-model="quickDraft" aria-label="快速框说明" rows="7" @keydown.ctrl.enter.prevent="saveQuickDescription"></textarea>
+          <footer><button type="button" @click="quickEdit=null">取消</button><button type="button" class="primary" @click="saveQuickDescription">确定框说明</button></footer>
+        </section>
+      </div>
     </section>
   </ModalMask>
 </template>
 
 <style scoped>
+.frame-description{pointer-events:none}.frame-description div{background:#fffD;color:#20334e;line-height:1.3;padding:2px 4px;border-radius:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}.quick-mask{position:fixed;inset:0;background:#0006;z-index:10010;display:grid;place-items:center;padding:20px}.quick-dialog{width:min(560px,90vw);padding:18px;background:var(--bbi-surface,#fff);color:var(--bbi-ink,#222);border-radius:10px;box-shadow:0 12px 50px #0005}.quick-dialog textarea{width:100%;resize:vertical}
 .editor-actions{margin-left:auto;flex-wrap:nowrap}.editor-actions button{white-space:nowrap}
 .slot-picker{grid-column:1/-1}.slot-picker>button{width:100%}.slot-options{display:flex;flex-direction:column;gap:3px;max-height:210px;overflow-y:auto;margin-top:5px;padding:5px;border:1px solid #8886;border-radius:6px}.slot-options button{text-align:left;flex:none}
 .slot-actions{grid-column:1/-1;padding:8px;border:1px solid #2675cf66;border-radius:6px}.slot-actions .hint{margin-bottom:0}
 .manga-designer{width:min(1140px,96vw);max-height:94vh;overflow:auto;background:var(--bbi-surface,#fff);color:var(--bbi-ink,#222);border-radius:12px;padding:18px;box-sizing:border-box;box-shadow:0 16px 64px #0005;outline:none;font-size:13px}
-header,footer,.canvas-controls,.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}header{justify-content:space-between;font-size:17px;margin-bottom:14px}footer{justify-content:flex-end;margin-top:14px;border-top:1px solid #8884;padding-top:12px}.canvas-controls label{display:flex;align-items:center;gap:5px}.canvas-controls input{width:90px}.designer-body{display:grid;grid-template-columns:180px minmax(180px,1fr) 180px;gap:16px;margin-top:12px}.tools,.properties{display:flex;flex-direction:column;gap:9px}.tools label:not(.check),.properties label{display:flex;flex-direction:column;gap:5px}.check{display:flex;gap:5px;align-items:center}input,textarea,select{box-sizing:border-box;min-width:0;max-width:100%;padding:6px;border:1px solid #8886;border-radius:5px;color:inherit;background:transparent;font:inherit}button{border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;padding:6px 9px;cursor:pointer;font:inherit}button:disabled{opacity:.4;cursor:default}button.active,button.primary{background:#2675cf;color:white}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.layout-canvas:focus-visible{outline:2px solid #2675cf;outline-offset:2px}.hint{font-size:12px;line-height:1.6;opacity:.75;margin:7px 0}.canvas-area{background:#8881;border:1px solid #8884;padding:12px;display:flex;flex-direction:column;align-items:center;min-width:0}.layout-canvas{display:block;height:auto;overflow:visible;touch-action:none;user-select:none;box-shadow:0 2px 10px #0003}.panel,.slot{cursor:move}.slot-list{display:flex;flex-wrap:wrap;gap:4px;max-height:145px;overflow:auto}.slot-list button{font-size:11px;padding:4px 5px}.panel text{pointer-events:none}.error{color:#b3261e}
-@media(max-width:760px){.designer-body{grid-template-columns:1fr}.tools{display:flex;flex-direction:row;flex-wrap:wrap}.tools>.hint{width:100%}.properties{display:grid;grid-template-columns:1fr 1fr}.properties>.hint{grid-column:1/-1}.layout-canvas{max-height:58vh}.manga-designer{padding:12px}}
+header,footer,.canvas-controls,.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}header{justify-content:space-between;font-size:17px;margin-bottom:14px}footer{justify-content:flex-end;margin-top:14px;border-top:1px solid #8884;padding-top:12px}.canvas-controls label{display:flex;align-items:center;gap:5px}.canvas-controls input{width:90px}.designer-body{display:grid;grid-template-columns:180px minmax(180px,1fr) 180px;gap:16px;margin-top:12px}.tools,.properties{display:flex;flex-direction:column;gap:9px}.tools label:not(.check),.properties label{display:flex;flex-direction:column;gap:5px}.check{display:flex;gap:5px;align-items:center}input,textarea,select{box-sizing:border-box;min-width:0;max-width:100%;padding:6px;border:1px solid #8886;border-radius:5px;color:inherit;background:transparent;font:inherit}button{border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;padding:6px 9px;cursor:pointer;font:inherit}button:disabled{opacity:.4;cursor:default}button.active,button.primary{background:#2675cf;color:white}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.layout-canvas:focus-visible{outline:2px solid #2675cf;outline-offset:2px}.hint{font-size:12px;line-height:1.6;opacity:.75;margin:7px 0}.canvas-area{background:#8881;border:1px solid #8884;padding:12px;display:flex;flex-direction:column;align-items:center;min-width:0}.canvas-viewport{width:100%;height:62vh;overflow:auto;overscroll-behavior:contain}.layout-canvas{display:block;margin:0 auto;max-width:none;height:auto;overflow:visible;touch-action:none;user-select:none;box-shadow:0 2px 10px #0003}.panel,.slot{cursor:move}.slot-list{display:flex;flex-wrap:wrap;gap:4px;max-height:145px;overflow:auto}.slot-list button{font-size:11px;padding:4px 5px}.panel text{pointer-events:none}.error{color:#b3261e}
+@media(max-width:760px){.designer-body{grid-template-columns:1fr}.tools{display:flex;flex-direction:row;flex-wrap:wrap}.tools>.hint{width:100%}.properties{display:grid;grid-template-columns:1fr 1fr}.properties>.hint{grid-column:1/-1}.canvas-viewport{height:58vh}.manga-designer{padding:12px}}
 </style>

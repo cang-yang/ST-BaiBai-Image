@@ -3,6 +3,26 @@ import type { FrameBox, MangaLayoutDef, MangaOrientation, MangaPanel } from '@/m
 
 export type { FrameBox, MangaLayoutDef, MangaOrientation, MangaPanel };
 
+/** Numbered instances retain the base role, but never alias another slot's coordinates. */
+export function slotType(key: string): string { return key.replace(/_[1-9]\d*$/, ''); }
+
+/** Use the actual frame outline, including slanted edges, for subject breakout. */
+function crossingSubjects(panel: MangaPanel): string[] {
+  const box=panel.slots.F;
+  if (!box) return [];
+  const [top,left,bottom,right]=box;
+  const outline=panel.shapes?.F ?? [[left,top],[right,top],[right,bottom],[left,bottom]];
+  return Object.entries(panel.slots).filter(([key,region])=>{
+    if (!['S','L','R'].includes(slotType(key))) return false;
+    const [y1,x1,y2,x2]=region;
+    const points=panel.shapes?.[key] ?? [[x1,y1],[x2,y1],[x2,y2],[x1,y2]];
+    return points.some(([x,y])=>outline.some(([ax,ay],i)=>{
+      const [bx,by]=outline[(i+1)%outline.length];
+      return (bx-ax)*(y-ay)-(by-ay)*(x-ax)<-.01;
+    }));
+  }).map(([key])=>key);
+}
+
 /**
  * 漫画 Layout 模式的持久化设置。
  *
@@ -237,6 +257,7 @@ export function applyMangaFrames(
     throw new Error('漫画 Layout:items 必须是非空数组。');
   }
   const items = root.items;
+  const usedSubjects = new Set<string>();
   const textUsage = new Map<MangaPanel, Map<string,number>>();
   const textGroups = new Map<string,{ box:FrameBox; items:Record<string,unknown>[]; shaped:boolean }>();
   for (const raw of items) {
@@ -276,12 +297,13 @@ export function applyMangaFrames(
         );
       }
       item.bbox = box;
+      if (item.label==='character' && ['S','L','R'].includes(slotType(resolvedSlot))) usedSubjects.add(`${layout.panels.indexOf(panel)}:${resolvedSlot}`);
       // Keep panel membership after removing symbolic fields. Inner boxes are
       // content regions, not additional comic frames.
       const caption = typeof item.caption === 'string' ? item.caption.replace(/^\s*panel\s+\d+\s*[,;:]\s*/i,'') : '';
       item.caption = `Content of panel ${layout.panels.indexOf(panel)+1}: ${caption}`.trim();
-      if (item.label==='text' && typeof item.text==='string' && item.text.trim() && TEXT_REGIONS[resolvedSlot]) {
-        item.caption += ` Placement: ${TEXT_REGIONS[resolvedSlot]} text region.`;
+      if (item.label==='text' && typeof item.text==='string' && item.text.trim() && TEXT_REGIONS[slotType(resolvedSlot)]) {
+        item.caption += ` Placement: ${TEXT_REGIONS[slotType(resolvedSlot)]} text region.`;
         const key=`${layout.panels.indexOf(panel)}:${resolvedSlot}`;
         const group=textGroups.get(key) ?? {box,items:[],shaped:!!panel.shapes?.[resolvedSlot]};
         group.items.push(item); textGroups.set(key,group);
@@ -317,18 +339,19 @@ export function applyMangaFrames(
   // One authoritative page guide, before style prose; never repeat pairwise
   // occlusion or outer-frame coordinates in each character/text caption.
   const hasText = items.some(item => item.label === 'text' && typeof item.text === 'string' && item.text.trim());
-  summary.caption = `${pageFrameGuide(layout, hasText)} ${typeof summary.caption==='string' ? summary.caption : ''}`.trim();
+  summary.caption = `${pageFrameGuide(layout, hasText, usedSubjects)} ${typeof summary.caption==='string' ? summary.caption : ''}`.trim();
   root.summary=summary;
   root.bbox_coord_space = 'abs_centralized';
   root.bbox_format = 'yxyx';
   return JSON.stringify(root);
 }
 
-function pageFrameGuide(layout: ResolvedLayout, hasText: boolean): string {
+function pageFrameGuide(layout: ResolvedLayout, hasText: boolean, usedSubjects: Set<string>): string {
   const frames = layout.panels.map((panel,index) => {
     const box = panel.slots.F ?? panel.slots.C;
     const shape = panel.shapes?.F;
-    const contour = shape ? `; clockwise corners xy ${JSON.stringify(shape)}` : '';
+    const crossing = crossingSubjects(panel).filter(key=>usedSubjects.has(`${index}:${key}`)).map(key=>`; ${key} is a continuous foreground subject region extending across the outer border, yxyx ${JSON.stringify(panel.slots[key])}; keep its subject continuous across the crossed borders`).join('');
+    const contour = (shape ? `; clockwise corners xy ${JSON.stringify(shape)}` : '') + crossing;
     return `panel ${index+1}${box ? ` (${framePosition(box,layout.canvas)}), outer frame yxyx [${box.join(', ')}]` : ' (no outer frame specified)'}${contour}`;
   });
   const layering = panelLayerGuides(layout.panels);
@@ -354,6 +377,24 @@ function framePosition([top,left,bottom,right]: FrameBox, canvas: ResolvedLayout
   return fullHeight ? `full-height ${horizontal}` : fullWidth ? `full-width ${vertical}` : `${vertical}-${horizontal}`;
 }
 
+/** Positive-area intersection of convex frame outlines (separating axes). */
+function framesOverlap(first: MangaPanel, second: MangaPanel): boolean {
+  const polygons: number[][][] = [];
+  for (const panel of [first, second]) {
+    const box = panel.slots.F;
+    if (!box) return false;
+    const [top,left,bottom,right] = box;
+    polygons.push(panel.shapes?.F ?? [[left,top],[right,top],[right,bottom],[left,bottom]]);
+  }
+  for (const points of polygons) for (let i=0;i<points.length;i++) {
+    const [x,y]=points[i], [nextX,nextY]=points[(i+1)%points.length];
+    const axisX=y-nextY, axisY=nextX-x;
+    const [a,b]=polygons.map(polygon=>polygon.map(([px,py])=>px*axisX+py*axisY));
+    if (Math.min(Math.max(...a),Math.max(...b))<=Math.max(Math.min(...a),Math.min(...b))) return false;
+  }
+  return true;
+}
+
 /** Pairwise overlap constraints; layer is plugin metadata, never an invented MOSS field. */
 export function panelLayerGuides(panels: MangaPanel[], target?: MangaPanel): string[] {
   const ordered = panels.map((panel,index)=>({panel,index})).sort((a,b)=>(a.panel.layer ?? a.index)-(b.panel.layer ?? b.index) || a.index-b.index);
@@ -361,8 +402,7 @@ export function panelLayerGuides(panels: MangaPanel[], target?: MangaPanel): str
   for (let i=0;i<ordered.length;i++) for (let j=i+1;j<ordered.length;j++) {
     const back=ordered[i], front=ordered[j];
     if (target && target!==back.panel && target!==front.panel) continue;
-    const a=back.panel.slots.F, b=front.panel.slots.F;
-    if (!a || !b || a[0]>=b[2] || b[0]>=a[2] || a[1]>=b[3] || b[1]>=a[3]) continue;
+    if (!framesOverlap(back.panel,front.panel)) continue;
     guides.push(`panel ${front.index+1} is in front of panel ${back.index+1}`);
   }
   return guides;
@@ -390,7 +430,7 @@ function breakoutBox(panel: MangaPanel, panelCount: number, base: number, canvas
 }
 
 function slotLine(panel: MangaPanel): string {
-  return [...Object.keys(panel.slots).filter(slot => slot !== 'X'), ...(panel.slots.F ? ['X'] : [])].join(' ');
+  return Object.keys(panel.slots).filter(slot => slotType(slot) !== 'X').join(' ');
 }
 /**
  * 生成拼进后端规范的漫画协议段。
@@ -405,17 +445,16 @@ export function buildMangaSpec(manga: MangaSettings): string {
   lines.push('- 每套版式的画布以该行标注尺寸为准，只选择与实际生成尺寸一致的版式。自定义画布不会自动改变 ComfyUI 工作流或预设尺寸。');
   lines.push('- 读取格式:版式 id｜格数｜用途｜读序｜1(位置代号):可用槽位 2(…):可用槽位 …');
   lines.push('- 挑法:先按「用途」筛掉不合节拍的版式,再比格数;依据不足就选更简单、更少格的。分配事件与对白严格沿该行给出的读序。');
-  lines.push('- 槽位:F 格框 C 完整内区 S 避开顶部字区的主体 L/R 左右人物 O 道具音效 T/TL/TR 顶部字区 B 底部字区 BL/BR 左下/右下字区 ML/MR 侧边字区 E 允许小部分越线进格间留白 X 出框范围(比 F 大一圈)。清单里没列出的槽位在该格不存在,填了会让这次生成失败。');
-  lines.push('- 一格一个主体框:同一个人在一格里只占一个框,不为备选框生成副本。');
+  lines.push('- 槽位:F 格框 C 完整内区 S 实际主体区域 L/R 左右人物 O 道具音效 T/TL/TR 顶部字区 B 底部字区 BL/BR 左下/右下字区 ML/MR 侧边字区 E 允许小部分越线进格间留白。清单里没列出的槽位在该格不存在,填了会让这次生成失败。');
+  lines.push('- 同类内框可有编号，如 S、S_2、O、O_2、TL、TL_2；每个完整键对应独立区域，编号不表示读序、人物数量或自动新增人物。仅使用该格清单中已有的完整键。');
+  lines.push('- 连续人物以一个主体框统领；复杂姿势可用已有辅助框定位手、脚、袖口等局部，局部描述写明所属角色、部位与连接方向，保留覆盖该部位的服装，避免在局部框重复完整外貌或生成另一个人。');
+  lines.push('- 同一角色若有有意安排的巨大脸部特写与小比例身体等多尺度展示，分别绑定已有区域并写明同一身份的两处独立呈现，不将两处画成一具连体身体；普通局部辅助则保持与主体连续。');
   lines.push('- 框用途是用户提供的内容分配说明：F 描述整格用途，其余键只作用于对应内框。结合原文与该说明选择内容，不把说明当作台词、旁白或可见印字，不新增槽位、坐标、剧情事件或参与者。空说明沿用槽位默认用途。');
   lines.push('- 字区按实际发言、说话人位置与读序选择 T/TL/TR/B/BL/BR/ML/MR；只有左侧人物说话时仅用左侧所需字区，右侧同理，不为沉默者、空位或配额创建 text 项与空气泡。字区可覆盖次要身体或衣物，不遮脸、关键手势、接触点或重要道具。');
   lines.push('- 每一格只能引用其清单中实际存在的槽位，删除的槽位不可使用。没有 T 时应从现有 TL/TR 选择上方字区，不要假定每格都有 T；没有任何字区时不要生成 text 项。');
   lines.push('- 左侧两泡优先 TL→BL，右侧两泡优先 TR→BR；更多台词可使用该侧现有 ML/MR 等字区，先规划实际读序，不机械按左右交替。BL/BR 是独立字区，仅在清单列出时使用，不与整块 B 混用覆盖同一区域。');
   lines.push('- O 给道具或音效。E 是有限越线(约 8px,只为贴边):越线时 caption 写明所属格与 limited border overlap into the gutter。');
-  const tiers = [2, 3, 4, 5].map(n => `${n} 格约 ${bleedFor(manga.bleed, n)}px`).join('、');
-  lines.push(
-    `- X 是出框:F 向外扩 ${bleedFor(manga.bleed, 3)}px 左右,按格数分档(${tiers}),可以越过格线压到相邻格边缘或页面留白。用它时 caption 写明 breaks the panel border;每页最多一处;只给头发、手、衣角、腿这类伸出体,不把整具身体压到邻格主体上。`,
-  );
+  lines.push('- 跨格主体使用实际 S（或对应的 L/R、编号主体框），出框范围由已保存的区域决定。caption 写明所属格、跨越边界、连续身体与前后遮挡；描述不能改变槽位坐标，区域不足时调整版式。旧 X 仅保留历史编译兼容，新输出按当前清单选择实际槽位。');
   lines.push('- 嵌入格只呈现所属主格同一时刻的反应或局部,caption 写明 simultaneous inset;后续动作必须放进后续独立格,主格主体用收窄后的 C 或 S 避开嵌入框。');
   lines.push('- 相邻格避免无叙事理由的同机位、同景别与同人物占比。');
   for (const orientation of ['portrait', 'landscape'] as MangaOrientation[]) {
@@ -432,7 +471,7 @@ export function buildMangaSpec(manga: MangaSettings): string {
         lines.push(`Panel stacking for ${layout.id}, back to front: ${order.map(({index})=>`panel ${index+1}`).join(' → ')}. Apply occlusion only where frames overlap; preserve reading order.`);
       }
       const cells = layout.panels
-        .map((panel, index) => `${index + 1}(${panel.position}):${slotLine(panel)}${panel.shapes ? `（四边形轮廓参考 ${Object.keys(panel.shapes).join(' ')}）` : ''}${panel.slotNotes && Object.keys(panel.slotNotes).length ? `；框用途 ${JSON.stringify(panel.slotNotes)}` : ''}`)
+        .map((panel, index) => `${index + 1}(${panel.position}):${slotLine(panel)}${panel.shapes ? `（四边形轮廓参考 ${Object.keys(panel.shapes).filter(key=>slotType(key)!=='X').join(' ')}）` : ''}${crossingSubjects(panel).length ? `；跨格主体 ${crossingSubjects(panel).join(' ')}` : ''}${panel.slotNotes && Object.keys(panel.slotNotes).length ? `；框用途 ${JSON.stringify(Object.fromEntries(Object.entries(panel.slotNotes).filter(([key])=>slotType(key)!=='X')))}` : ''}`)
         .join('  ');
       lines.push(`- ${head}｜${cells}`);
     }
@@ -450,6 +489,7 @@ export function parseCustomLayout(text: string): MangaCustomLayout {
   } catch (error) {
     throw new Error(`JSON 解析失败:${error instanceof Error ? error.message : String(error)}`);
   }
+  parsed = customSource(parsed);
   const entry = normalizeCustom(parsed);
   if (!entry) {
     throw new Error('需要形如 {"id":"my_layout","label":"…","portrait":[{"position":"…","slots":{"F":[y1,x1,y2,x2]}}]}');
@@ -534,9 +574,27 @@ function normalizePanels(raw: unknown): MangaPanel[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** Flat ComfyUI exports use the same centered yxyx geometry; adapt only the envelope. */
+function customSource(raw: unknown): unknown {
+  if (!raw || typeof raw!=='object' || Array.isArray(raw)) return raw;
+  const entry={...raw} as Record<string,unknown>;
+  if (entry.panels!==undefined) {
+    if (entry.portrait!==undefined || entry.landscape!==undefined) throw new Error('panels 与 portrait/landscape 不能同时提供，请保留一种版式格式。');
+    const canvas=normalizeCanvas(entry.canvas);
+    if (!canvas) throw new Error('ComfyUI panels 格式需要有效的 canvas.width 与 canvas.height。');
+    if (!Array.isArray(entry.panels) || !entry.panels.length) throw new Error('panels:需要非空面板数组。');
+    entry[orientationOf(canvas.width,canvas.height)]=entry.panels;
+    delete entry.panels;
+  }
+  if (typeof entry.description==='string') entry.usage=entry.description;
+  return entry;
+}
+
 function normalizeCustom(raw: unknown): MangaCustomLayout | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const entry = raw as Partial<MangaCustomLayout>;
+  let source: unknown;
+  try { source=customSource(raw); } catch { return null; }
+  const entry = source as Partial<MangaCustomLayout>;
   const id = typeof entry.id === 'string' ? entry.id.trim() : '';
   if (!id) return null;
   const portrait = normalizePanels(entry.portrait);

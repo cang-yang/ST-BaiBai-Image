@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRenderer, defineComponent, ssrContextKey } from 'vue';
+import { createRenderer, defineComponent, nextTick, ssrContextKey } from 'vue';
 import Editor from './MangaLayoutEditor.vue';
 import { quadPoints } from '@/manga/editor';
 
@@ -29,7 +29,7 @@ function editor(props: Record<string,unknown> = {}) {
 }
 
 describe('版式编辑器 Ctrl 角点交互',()=>{
-  it('按类型添加单个内框，自动选中且可撤销、保存，重复及未知类型不改动版式',()=>{
+  it('按类型添加编号内框，保留原框，独立编辑、撤销、保存，未知类型不改动版式',()=>{
     const {state,events,close}=editor();state.add();
     expect(state.doc.value.panels[1].slots).toEqual({});
     state.slotPickerOpen.value=true;state.slotsPreview.value=false;state.addSlot('TR');
@@ -37,12 +37,17 @@ describe('版式编辑器 Ctrl 角点交互',()=>{
     expect(state.selectedSlot.value).toBe('TR');
     expect(state.slotsPreview.value).toBe(true);
     expect(state.slotPickerOpen.value).toBe(false);
-    expect(state.availableSlots.value).not.toContain('TR');
+    expect(state.availableSlots.value).toContain('TR');
     state.changeRect('x',{target:{value:350}});state.changeSlotNote({target:{value:'右上对白'}});state.confirmSlot();
     const kept=JSON.stringify(state.doc.value.panels[1]);const history=state.undoStack.value.length;
-    state.addSlot('TR');state.addSlot('UNKNOWN');
+    state.addSlot('UNKNOWN');
     expect(JSON.stringify(state.doc.value.panels[1])).toBe(kept);
     expect(state.undoStack.value.length).toBe(history);
+    state.addSlot('TR');state.changeSlotNote({target:{value:'第二个右上对白'}});state.confirmSlot();
+    expect(state.doc.value.panels[1].slotNotes.TR).toBe('右上对白');
+    expect(state.doc.value.panels[1].slotNotes.TR_2).toBe('第二个右上对白');
+    state.undo();state.undo();
+    expect(JSON.stringify(state.doc.value.panels[1])).toBe(kept);
     state.addSlot('S');state.confirmSlot();state.undo();
     expect(JSON.stringify(state.doc.value.panels[1])).toBe(kept);
     state.redo();state.save();
@@ -51,6 +56,44 @@ describe('版式编辑器 Ctrl 角点交互',()=>{
     expect((saved.portrait ?? saved.landscape)[1].slotNotes.TR).toBe('右上对白');
     state.slotPickerOpen.value=true;state.selectPanel(0);
     expect(state.slotPickerOpen.value).toBe(false);
+    close();
+  });
+
+  it('静止点击不捕获指针，双击编辑内外框说明，可取消、保存、撤销且不改变几何',()=>{
+    const {state,events,close}=editor();
+    let captures=0;state.svg.value.setPointerCapture=()=>captures++;
+    const event={button:0,pointerId:1,clientX:100,clientY:100,ctrlKey:false,altKey:false};
+    const before=JSON.stringify(state.doc.value.panels[0]);
+    state.begin(event,0,'','S');state.move({...event,clientX:101});state.end(event);
+    expect(captures).toBe(0);
+    state.openDescription(0,'S');state.quickDraft.value='主体跨格说明';state.saveQuickDescription();
+    expect(state.previewDescription(state.current.value,'S')).toBe('主体跨格说明');
+    state.openDescription(0,'F');state.quickDraft.value='应取消';state.quickEdit.value=null;
+    expect(state.frameDescription(state.current.value,'F')).toBe('');
+    state.save();
+    const saved=events.at(-1)?.[1];
+    expect((saved.portrait ?? saved.landscape)[0].slotNotes.S).toBe('主体跨格说明');
+    state.confirmSlot();state.undo();
+    expect(JSON.stringify(state.doc.value.panels[0])).toBe(before);
+    state.begin(event,0);state.move({...event,clientX:110});state.end(event);
+    expect(captures).toBe(1);
+    close();
+  });
+
+  it('Ctrl滚轮只缩放视图，普通滚轮不拦截，缩放后坐标换算与保存保持一致',async()=>{
+    const {state,close}=editor();
+    const before=JSON.stringify(state.doc.value);
+    state.canvasViewport.value={scrollLeft:0,scrollTop:0,clientHeight:600};
+    let prevented=0;
+    const event={ctrlKey:false,deltaY:-100,deltaMode:0,clientX:512,clientY:512,preventDefault:()=>prevented++,stopPropagation:()=>{}};
+    state.zoomCanvas(event);expect(state.canvasZoom.value).toBe(1);expect(prevented).toBe(0);
+    state.zoomCanvas({...event,ctrlKey:true});await nextTick();
+    expect(state.canvasZoom.value).toBeGreaterThan(1);expect(prevented).toBe(1);
+    expect(JSON.stringify(state.doc.value)).toBe(before);
+    state.svg.value.getBoundingClientRect=()=>({left:0,top:0,width:2048,height:2048});
+    expect(state.point({clientX:1024,clientY:1024})).toEqual({x:512,y:512});
+    state.zoomCanvas({...event,ctrlKey:true,deltaY:100000});await nextTick();expect(state.canvasZoom.value).toBe(.25);
+    state.zoomCanvas({...event,ctrlKey:true,deltaY:-100000});await nextTick();expect(state.canvasZoom.value).toBe(4);
     close();
   });
   it('新增分格只带外框，补齐槽位是显式操作并可撤销、保存后读回',()=>{
