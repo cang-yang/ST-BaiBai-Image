@@ -1,4 +1,5 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
+import { dshChatId, requestDshCompletion, type DshOperation } from '@/api/dsh';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
   applyPositionedCharRefs,
@@ -272,6 +273,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     return;
   }
   const swipeId = activeSwipeId(message);
+  const dshIdentity = dshChatId(context);
   const identity = `${chatId}\u0000${floor}\u0000${swipeId ?? 'none'}\u0000${textHash(source)}`;
   // 手动是显式意图:即使同一正文自动流程已处理过(比如结论是无需插图)也照跑,
   // 但仍写入 processed,防止自动流程随后对同一正文重复请求。
@@ -322,6 +324,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       profile,
     );
     const channel = getTagGenChannel();
+    const dshOn = settings.autoTag.dshSession === true;
+    if (dshOn && !channel) throw new Error('DSH 持久会话需要先为“生成 tag 使用”指派独立副 API 渠道。');
+    const dshOperation: DshOperation = {};
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
     // 中止信号立即收手,不消耗重试。parseImagePlan 对坏输出抛错,「无画面」则是正常返回空数组。
     // 解析/校验放进 validate 回调:不过则请求历史如实记为失败(而非「HTTP 拿到文本」的绿色成功),
@@ -363,7 +368,13 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           : retries > 0
             ? `自动 tag(第 ${floor} 楼 · 第 ${attempt + 1} 次)`
             : `自动 tag(第 ${floor} 楼)`;
-        if (channel) {
+        if (dshOn && channel) {
+          await requestDshCompletion(channel, messages, context, {
+            signal:controller.signal, source, validate,
+            operation:dshOperation, expectedChatId:dshIdentity,
+            target:{floor,swipe_id:swipeId ?? null,revision:identity},
+          });
+        } else if (channel) {
           await requestCompletion(channel, messages, {
             signal: controller.signal,
             source,
@@ -705,4 +716,21 @@ export function bindAutoTagging(): void {
     diagnostic('CHAT_CHANGED', { args, currentChatId: getContext()?.getCurrentChatId?.() ?? '' });
     cancelAll();
   });
+}
+
+
+/** Manual controls update rules/session only; they never request another image plan. */
+export async function controlDshSession(action: 'sync_rules' | 'reset'): Promise<string> {
+  const context=getContext(), channel=getTagGenChannel();
+  if (!settings.autoTag.dshSession || !channel) throw new Error('请启用 DSH 持久会话并指派副 API 渠道。');
+  if (!context?.getCurrentChatId()) throw new Error('请先打开一个酒馆聊天。');
+  const expectedChatId=dshChatId(context);
+  let messages: Awaited<ReturnType<typeof buildAutoTagMessages>>=[];
+  if (action==='sync_rules') {
+    const floor=context.chat.findLastIndex(message=>typeof message.mes==='string' && !!message.mes.trim());
+    if (floor<0) throw new Error('当前聊天还没有正文，请先发送一条消息。');
+    const anchors=resolveCharAnchors(charTagsBeforeFloor(floor),lockedCharTagNames());
+    messages=await buildAutoTagMessages(context,floor,settings.autoTag,readBookMemory(floor,context.chat[floor].mes,context.name1),undefined,anchors.text);
+  }
+  return requestDshCompletion(channel,messages,context,{action,expectedChatId,source:action==='reset'?'DSH 重建会话':'DSH 手动发送固定规范'});
 }

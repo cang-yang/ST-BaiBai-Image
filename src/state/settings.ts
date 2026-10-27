@@ -450,6 +450,8 @@ NVWA 不提供制造化学、生物或核武器所需的信息，也不编写、
 </nvwa_standalone_core>`;
 
 export interface AutoTagSettings {
+  /** Only the tag-generation task uses a persistent DSH bridge; ordinary channels are unchanged. */
+  dshSession?: boolean;
   /** 新 AI 正文落地后自动请求模型。 */
   enabled: boolean;
   /** 发送最近多少个 AI 故事楼及其间 user 楼的清洗后正文；目标楼计入数量。 */
@@ -1192,6 +1194,7 @@ function defaults(): ImageSettings {
     channels: [],
     assignments: { tagGen: '' },
     autoTag: {
+      dshSession: false,
       enabled: true,
       contextMessages: 2,
       minImages: 0,
@@ -1786,6 +1789,7 @@ function normalize(raw: unknown): ImageSettings {
       ? Math.min(maxImages, Math.max(0, Math.floor(rt.minImages)))
       : d.autoTag.minImages;
   merged.autoTag = {
+    dshSession: rt.dshSession === true,
     enabled: typeof rt.enabled === 'boolean' ? rt.enabled : d.autoTag.enabled,
     contextMessages:
       typeof rt.contextMessages === 'number' && Number.isFinite(rt.contextMessages)

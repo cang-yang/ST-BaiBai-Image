@@ -365,9 +365,9 @@ ${characterRule}
   const messages: ChatMsg[] = [];
   // 破限词与柏宝书同口径:留空回落内置默认(同款文本),永远置顶第一条 system。
   const jailbreak = (options.prompts?.jailbreak ?? '').trim() || DEFAULT_JAILBREAK_PROMPT;
-  if (jailbreak) messages.push({ role: 'system', content: jailbreak });
+  if (jailbreak) messages.push({ role: 'system', content: jailbreak, purpose: 'prefix' });
   // 后端书写规范(ComfyUI/NAI)压在固定协议之前;无适用规范时不占消息位。
-  if (spec) messages.push({ role: 'system', content: spec });
+  if (spec) messages.push({ role: 'system', content: spec, purpose: 'spec' });
   const contract = layoutOn ? fixedContract
     .replaceAll('单一瞬间', '短事件漫画页（每格一个瞬间）')
     .replace('不要返回同一事件的相邻动作或换镜头版本。', '不同页不重复同一事件；同页各格允许按原文推进动作、切换镜头或呈现反应。')
@@ -378,7 +378,7 @@ ${characterRule}
     .replace('在图片 tag 中照抄这套外貌', '在各出场格对应的 character.caption 中写入可见外貌')
     .replace('同一张图里这套外貌只写一遍', '跨格重现必须分别绑定可见身份锚点与当前状态；已有辅助框可描述同一角色的局部，不重复整串外貌；有意的多尺度展示明确为同一身份的独立呈现')
     : fixedContract;
-  messages.push({ role: 'system', content: contract });
+  messages.push({ role: 'system', content: contract, purpose: 'contract' });
   // 思维链:压在任务协议之后,要求模型先在 <thinking> 里过检查点再输出 JSON。
   // 解析端(protocol.ts)会先剥掉 think 块再取 JSON,二者配套;按后端取对应的那一份。
   const mangaThinking =
@@ -388,7 +388,7 @@ ${characterRule}
     (layoutOn && !options.prompts?.comfyThinking?.trim()
       ? '内部核对事实与状态、人物归属、镜头与接触、光影与细节、文字与读序、JSON与坐标；只给一个简短英文检查摘要及宿主最终 JSON。tag 为完整 Layout JSON 字符串，nl 留空，不输出逐格推理或提示词草稿。'
       : backendThinkingPrompt(options, nlOn, naiCharPromptsOn));
-  if (thinking) messages.push({ role: 'system', content: thinking });
+  if (thinking) messages.push({ role: 'system', content: thinking, purpose: 'check' });
   if (charCard) messages.push({ role: 'system', content: buildCharCardSystem(charCard) });
   if (persona) messages.push({ role: 'system', content: buildPersonaSystem(persona) });
   if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo) });

@@ -185,6 +185,8 @@ describe('auto tag prompt', () => {
       const second = await buildAutoTagMessages(context(), 1, options, null);
       expect(first.slice(0, 4)).toEqual(second.slice(0, 4));
       expect(first.slice(0, 4).map(m => m.role)).toEqual(['system', 'system', 'system', 'system']);
+      expect(first.slice(0, 4).map(m => m.purpose)).toEqual(['prefix', 'spec', 'contract', 'check']);
+      expect(first.slice(4).every(m => m.purpose === undefined)).toBe(true);
       expect(first[0].content).toBe('PREFIX_MARKER');
       expect(first[1].content).toContain('SPEC_MARKER');
       expect(first[2].content).toContain('你是严谨的剧情画面规划与生图提示词编写员');

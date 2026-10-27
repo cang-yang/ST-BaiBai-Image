@@ -24,6 +24,23 @@ const DEFAULT_TIMEOUT_SEC = 180;
 export interface ChatMsg {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** Local grouping only; never forwarded as an OpenAI message field. */
+  purpose?: 'prefix' | 'spec' | 'contract' | 'check';
+}
+
+export interface DshSessionRequest {
+  protocol_version: 1;
+  chat_id: string;
+  session_id?: string;
+  request_id: string;
+  action: 'generate' | 'sync_rules' | 'reset';
+  fixed_message_count: number;
+  fixed_message_types: NonNullable<ChatMsg['purpose']>[];
+  target?: { floor: number; swipe_id: number | null; revision: string };
+}
+
+export function wireMessages(messages: ChatMsg[]): ChatMsg[] {
+  return messages.map(({role,content})=>({role,content}));
 }
 
 export class ApiError extends Error {
@@ -68,6 +85,9 @@ export interface RequestOptions {
    * 由调用方决定重试/放弃。
    */
   validate?: (content: string) => void;
+  /** DSH bridge metadata is sent through ST's custom source to preserve it. */
+  dshSession?: DshSessionRequest;
+  onDshResponse?: (data: unknown) => void;
 }
 
 /* ============ 请求历史埋点(纯辅助,绝不允许影响主流程) ============ */
@@ -204,11 +224,12 @@ export function buildRequestBody(
   messages: ChatMsg[],
   reverseProxy: string,
   stream: boolean,
+  dshSession?: DshSessionRequest,
 ): Record<string, unknown> {
   const effort = channel.reasoningEffort?.trim() ?? '';
   const common = {
     model: channel.model,
-    messages,
+    messages: wireMessages(messages),
     temperature: channel.temperature ?? 1.0,
     max_tokens: channel.maxTokens ?? 65535,
     stream,
@@ -219,12 +240,12 @@ export function buildRequestBody(
     frequency_penalty: 0,
   };
 
-  const body: Record<string, unknown> = effort
+  const body: Record<string, unknown> = effort || dshSession
     ? {
         chat_completion_source: 'custom',
         custom_url: reverseProxy,
         custom_include_headers: JSON.stringify({ Authorization: `Bearer ${channel.key || ''}` }),
-        custom_include_body: JSON.stringify({ reasoning_effort: effort }),
+        custom_include_body: JSON.stringify({ ...(effort ? {reasoning_effort:effort} : {}), ...(dshSession ? {dsh_session:dshSession} : {}) }),
         ...common,
       }
     : {
@@ -237,6 +258,7 @@ export function buildRequestBody(
   // 排除参数:把用户指定的字段从 body 删掉,规避不接受这些参数的兼容端点报错。
   for (const p of channel.excludeParams ?? []) {
     const key = p.trim();
+    if (dshSession && ['messages','stream','custom_include_body','custom_include_headers','chat_completion_source','custom_url'].includes(key)) throw new ApiError(`DSH 持久会话不能排除参数 ${key}`);
     if (key) delete body[key];
   }
   return body;
@@ -252,8 +274,8 @@ async function requestCompletionAtUrl(
   if (!ctx) throw new ApiError('SillyTavern 上下文不可用');
   if (!channel.url || !channel.model) throw new ApiError('副 API 渠道未配置完整(缺 url 或 model)');
 
-  const stream = channel.stream ?? false;
-  const body = buildRequestBody(channel, messages, reverseProxy, stream);
+  const stream = opts.dshSession ? false : channel.stream ?? false;
+  const body = buildRequestBody(channel, messages, reverseProxy, stream, opts.dshSession);
 
   const timeoutSec = validTimeoutSec(channel.timeoutSec);
 
@@ -296,6 +318,10 @@ async function requestCompletionAtUrl(
         throw new ApiError(data.error.message || '副 API 返回错误');
       }
 
+      opts.onDshResponse?.(data);
+      if (opts.dshSession && opts.dshSession.action !== 'generate') {
+        return {content:extractContent(data) || (opts.dshSession.action==='reset' ? 'DSH 会话已重建' : '固定规范已发送'),usage:readUsage(data)};
+      }
       const parsed = extractContent(data);
       if (!parsed) throw new ApiError('副 API 返回空内容');
       // ST 代理非流式分支是 response.send(json) 原样透传,故 usage 是上游真值。
@@ -450,7 +476,7 @@ export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOption
   );
 
   try {
-    const content = (await ctx.generateRaw({ prompt: messages, responseLength: MAIN_API_RESPONSE_LENGTH }))?.trim();
+    const content = (await ctx.generateRaw({ prompt: wireMessages(messages), responseLength: MAIN_API_RESPONSE_LENGTH }))?.trim();
     if (!content) throw new ApiError('主 API 返回空内容');
     // 与副 API 同口径:验收不过记失败,不记「成功」
     opts.validate?.(content);
