@@ -46,6 +46,18 @@ describe('stripCustomTags', () => {
 });
 
 describe('prompt body cleaning', () => {
+  it('does not offer standalone container tags as picture positions', () => {
+    const text = '<now_plot>\n正文\n</now_plot>\n<summary>\n摘要\n</summary>\n<update data-type="state">\n状态\n</update>';
+    expect(prepareTargetText(text, []).segments).toEqual([
+      {id:'P1',sourceLine:1,text:'正文'},
+      {id:'P2',sourceLine:4,text:'摘要'},
+      {id:'P3',sourceLine:7,text:'状态'},
+    ]);
+    expect(prepareTargetText('<p>正文</p>\n<tag/><tag-two>\n比较 a < b', []).segments).toEqual([
+      {id:'P1',sourceLine:0,text:'<p>正文</p>'},
+      {id:'P2',sourceLine:2,text:'比较 a < b'},
+    ]);
+  });
   const source = `状态栏
 <think>不可见思维</think>
 <bbs_start>2026/8/16 10:00</bbs_start>

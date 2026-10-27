@@ -232,6 +232,9 @@ export function prepareTargetText(mes: string, tags: string[]): PreparedTargetTe
   const segments = sourceLineRanges(source)
     .map(line => ({ sourceLine: line.index, text: retainedLineText(source, line, ranges) }))
     .filter(segment => !!segment.text)
+    // Container delimiters are not narrative anchors: inserting after an opening
+    // <summary>/<update> line would put the image inside hidden metadata.
+    .filter(segment => !/^(?:<\/?[a-z][\w:~-]*(?:\s[^<>]*?)?\s*\/?>\s*)+$/i.test(segment.text))
     .map((segment, index) => ({ id: `P${index + 1}`, ...segment }));
   return {
     promptText: segments.map(segment => `${segment.text} ⟦${segment.id}⟧`).join('\n\n'),
