@@ -6,7 +6,7 @@ import type { STContext } from '@/st/context';
 
 const h=vi.hoisted(()=>({context:null as STContext|null,begin:vi.fn((_record:{messages:ChatMsg[]})=>1),finish:vi.fn(),fail:vi.fn()}));
 vi.mock('@/st/context',()=>({getContext:()=>h.context}));
-vi.mock('@/state/history',()=>({beginLlm:h.begin,finishLlm:h.finish,failLlm:h.fail,patchLlmTokens:vi.fn(),FOLLOW_MAIN_API:'主API',safeHistory:(fn:()=>unknown)=>fn()}));
+vi.mock('@/state/history',()=>({beginLlm:h.begin,finishLlm:h.finish,failLlm:h.fail,patchLlmTokens:vi.fn(),patchLlmResponse:vi.fn(),FOLLOW_MAIN_API:'主API',safeHistory:(fn:()=>unknown)=>fn()}));
 
 const channel:ApiChannel={id:'dsh',name:'DSH',url:'http://127.0.0.1:43121/v1',key:'test-local-key',model:'dsh-default',temperature:.6,maxTokens:8192,timeoutSec:30,stream:true,excludeParams:[],reasoningEffort:''};
 const fixed:ChatMsg[]=[{role:'system',content:'prefix',purpose:'prefix'},{role:'system',content:'spec',purpose:'spec'},{role:'system',content:'contract',purpose:'contract'},{role:'system',content:'check',purpose:'check'}];

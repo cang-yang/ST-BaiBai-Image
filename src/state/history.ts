@@ -53,6 +53,10 @@ export interface LlmRecord extends BaseRecord {
   channelName: string;
   model: string;
   stream: boolean;
+  transport?: 'proxy' | 'direct' | 'main';
+  endpoint?: string;
+  phase?: 'request' | 'response' | 'validation';
+  httpStatus?: number | null;
   /** 完整提示词(已按 MAX_CONTENT 截断)。 */
   messages: ChatMsg[];
   /** 返回正文(已截断)。 */
@@ -158,6 +162,8 @@ export interface LlmBegin {
   model: string;
   stream: boolean;
   messages: ChatMsg[];
+  transport?: LlmRecord['transport'];
+  endpoint?: string;
 }
 
 /** 登记一次副 API 请求,返回 id 供后续 finish/fail。 */
@@ -174,6 +180,10 @@ export function beginLlm(info: LlmBegin): number {
     channelName: info.channelName,
     model: info.model,
     stream: info.stream,
+    transport: info.transport,
+    endpoint: info.endpoint,
+    phase: 'request',
+    httpStatus: null,
     messages: truncateMessages(info.messages),
     response: '',
     promptTokens: null,
@@ -190,6 +200,13 @@ export interface LlmFinish {
   completionTokens: number | null;
   cacheReadTokens?: number | null;
   tokensEstimated: boolean;
+}
+
+/** Keep response evidence even when parsing or caller validation subsequently fails. */
+export function patchLlmResponse(id: number, info: Partial<LlmFinish> & Pick<Partial<LlmRecord>, 'phase' | 'httpStatus'>): void {
+  const record = find(id);
+  if (record?.kind !== 'llm') return;
+  Object.assign(record, info, info.response === undefined ? {} : { response: truncate(info.response) });
 }
 
 export function finishLlm(id: number, info: LlmFinish): void {

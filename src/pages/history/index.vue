@@ -96,6 +96,12 @@ function cacheLabel(record: LlmRecord, compact = false): string {
   return rate === null ? '缓存命中率：未提供' : `缓存命中率 ${rate.toFixed(1)}%`;
 }
 
+function requestFacts(record: LlmRecord): string[] {
+  const transport = record.transport === 'direct' ? '浏览器直连' : record.transport === 'proxy' ? '酒馆转发' : record.transport === 'main' ? '跟随主 API' : '';
+  const phase = record.phase === 'validation' ? '已收到内容，校验配图计划' : record.phase === 'response' ? '已收到接口响应' : record.phase === 'request' ? '尚未收到接口响应' : '';
+  return [transport, record.endpoint ?? '', record.httpStatus ? `HTTP ${record.httpStatus}` : '', phase].filter(Boolean);
+}
+
 /** 把一条记录摊成「按顺序的若干段」——展开区就是照这个顺序渲染的。 */
 function segments(record: HistoryRecord): Segment[] {
   if (record.kind === 'llm') {
@@ -134,6 +140,7 @@ function facts(record: HistoryRecord): string[] {
       out.push(`缓存命中 ${record.cacheReadTokens.toLocaleString()} token`);
     }
     out.push(cacheLabel(record));
+    out.push(...requestFacts(record));
   } else {
     out.push(`种子 ${record.seed}`, record.size);
   }
@@ -149,7 +156,7 @@ function copyAll(record: HistoryRecord): void {
       ? `提示词 token：${tokenLabel(record)}`
       : '',
     record.error ? `错误：${record.error}` : '',
-    ...(record.kind === 'llm' ? [cacheLabel(record),
+    ...(record.kind === 'llm' ? [...requestFacts(record), cacheLabel(record),
       record.cacheReadTokens !== null ? `缓存命中 token：${record.cacheReadTokens}` : '',
       record.completionTokens !== null ? `输出 token：${record.completionTokens}` : '',
     ].filter(Boolean) : []),

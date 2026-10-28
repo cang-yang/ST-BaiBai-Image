@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import PresetRuleEditor from './PresetRuleEditor.vue';
@@ -22,6 +22,28 @@ import { legacyRules } from '@/presets/rules';
 
 const config = computed(() => settings.imagePresets);
 const picker = ref<HTMLInputElement>();
+const manageMenu = ref<HTMLDetailsElement>();
+function closeManageMenu(): void {
+  if (manageMenu.value) manageMenu.value.open = false;
+}
+function dismissManageMenu(event: PointerEvent): void {
+  if (manageMenu.value?.open && !event.composedPath().includes(manageMenu.value)) closeManageMenu();
+}
+function manageMenuKey(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !manageMenu.value?.open) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeManageMenu();
+  manageMenu.value?.querySelector('summary')?.focus();
+}
+onMounted(() => {
+  document.addEventListener('pointerdown', dismissManageMenu, true);
+  document.addEventListener('keydown', manageMenuKey, true);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', dismissManageMenu, true);
+  document.removeEventListener('keydown', manageMenuKey, true);
+});
 const selected = ref(config.value.activeId);
 const preset = computed(() => config.value.presets.find(p => p.id === selected.value));
 const displayed = computed(() => draft.value ?? preset.value ?? builtinImagePreset());
@@ -142,7 +164,7 @@ function removeEntry(): void {
   entryId.value = draft.value.entries[0]?.id ?? '';
 }
 async function inspect(send: boolean): Promise<void> {
-  busy.value = true; error.value = ''; result.value = ''; preview.value = []; checkResult.value = undefined;
+  busy.value = true; error.value = ''; notice.value = ''; result.value = ''; preview.value = []; checkResult.value = undefined;
   controller = new AbortController();
   try {
     const chosen = current();
@@ -199,9 +221,9 @@ async function inspect(send: boolean): Promise<void> {
       <input ref="picker" type="file" hidden multiple accept=".json,application/json" @change="importFiles" />
       <template v-if="displayed">
         <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" :title="preset ? '编辑预设' : '复制内置默认后编辑'" @click="preset ? edit(preset) : duplicate()"><Icon name="edit" />{{ preset ? '编辑' : '复制并编辑' }}</button>
-        <details class="ip-manage">
+        <details ref="manageMenu" class="ip-manage">
           <summary class="bbi-btn bbi-btn-sm" title="预设管理" aria-label="预设管理"><Icon name="more" /></summary>
-          <div class="ip-menu">
+          <div class="ip-menu" @click="closeManageMenu">
             <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" title="复制为新预设" @click="duplicate"><Icon name="copy" />复制</button>
             <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" title="导出预设" @click="download"><Icon name="upload" />导出</button>
             <button v-if="preset" class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" title="删除预设" @click="removeTarget = preset"><Icon name="trash" />删除</button>

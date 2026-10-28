@@ -141,6 +141,8 @@ describe('auto tag prompt', () => {
     expect(text).not.toContain('LEGACY_PREFIX');
     expect(messages.some(m => m.purpose === 'contract')).toBe(true);
     expect(text).toContain('submit_image_plan');
+    expect(messages.find(m => m.purpose === 'contract')?.content).not.toContain('请先在 <thinking>');
+    expect(messages.find(m => m.purpose === 'contract')?.content).not.toContain('除一个 <thinking> 块');
     expect(text).toContain('目标第一行');
     expect(text).toContain('P1');
     expect(messages.some(m => m.purpose === 'check')).toBe(false);
@@ -190,6 +192,9 @@ describe('auto tag prompt', () => {
       const sample = JSON.parse(contract.match(/格式固定为：\n([^\n]+)\n/)![1]);
       const tag = sample.images[0].tag;
       expect(JSON.parse(tag)).toMatchObject({ layout: 'balanced_1', items: [{ panel: 1, slot: 'C' }] });
+      expect(JSON.parse(tag)).not.toHaveProperty('bbox_coord_space');
+      expect(JSON.parse(tag)).not.toHaveProperty('bbox_format');
+      expect(contract).not.toContain('bbox_coord_space="abs_centralized"');
       expect(JSON.parse(applyMangaFrames(tag, settings.manga, { width: 1088, height: 1920 })).items[0].bbox).toHaveLength(4);
     } finally {
       settings.defaultBackend = oldBackend;

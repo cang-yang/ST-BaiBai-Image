@@ -6,7 +6,7 @@ import type { ApiChannel } from '@/state/settings';
 const mocks = vi.hoisted(() => ({ validate: vi.fn(), finish: vi.fn(), fail: vi.fn(), main: vi.fn(async () => 'main answer') }));
 vi.mock('@/state/history', () => ({
   FOLLOW_MAIN_API: 'main', beginLlm: () => 1, finishLlm: mocks.finish, failLlm: mocks.fail,
-  patchLlmTokens: vi.fn(), safeHistory: (f: () => unknown) => f(),
+  patchLlmTokens: vi.fn(), patchLlmResponse: vi.fn(), safeHistory: (f: () => unknown) => f(),
 }));
 vi.mock('@/st/context', () => ({ getContext: () => ({ getRequestHeaders: () => ({ 'X-CSRF-Token': 'HOST_SECRET' }), generateRaw: mocks.main }) }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });

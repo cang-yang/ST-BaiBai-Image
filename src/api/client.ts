@@ -6,6 +6,7 @@ import {
   failLlm,
   finishLlm,
   patchLlmTokens,
+  patchLlmResponse,
   safeHistory,
   FOLLOW_MAIN_API,
 } from '@/state/history';
@@ -57,6 +58,8 @@ function upstreamError(message: string, status?: number): ApiError {
     hint = '上游代理的模型通道不兼容（Build/Playground），不是配图预设或生图工作流错误。请在代理端检查该模型的路由和参数支持，或联系代理服务商。';
   } else if (/Thinking mode does not support this tool_choice/i.test(message)) {
     hint = '服务商不接受思考模式下的当前工具选择参数。请确认插件已更新；仍失败时可改用支持工具调用的渠道，或在配图预设中选择普通文本。';
+  } else if (status === 504 || /gateway[\s-]*time[\s-]*out/i.test(message)) {
+    hint = '上游网关等待超时，未取得完整模型结果；这不等于预设 JSON 错误。可在副 API 渠道开启流式传输，仍失败时检查中转网关的超时限制。';
   }
   const prefix = status === undefined ? '副 API 返回错误' : `副 API 请求失败 (${status})`;
   return new ApiError(`${prefix}: ${hint ? `${hint}\n上游原始错误：` : ''}${message.slice(0, 300)}`, status);
@@ -306,6 +309,13 @@ function directEndpoint(base: string, endpoint: string): string {
   return url.href;
 }
 
+function diagnosticEndpoint(base: string): string {
+  try {
+    const url = new URL(base);
+    return `${url.origin}${url.pathname}`;
+  } catch { return ''; }
+}
+
 async function requestCompletionAtUrl(
   channel: ApiChannel,
   messages: ChatMsg[],
@@ -333,9 +343,13 @@ async function requestCompletionAtUrl(
       model: channel.model,
       stream,
       messages,
+      transport: opts.direct ? 'direct' : 'proxy',
+      endpoint: diagnosticEndpoint(reverseProxy),
     }),
   );
 
+  let partialResponse = '';
+  let streamEvidence = '';
   try {
     const result = await withTimeout(timeoutSec, opts.signal, '副 API 请求', async signal => {
       const resp = await fetch(endpoint, {
@@ -345,22 +359,40 @@ async function requestCompletionAtUrl(
         body: JSON.stringify(body),
         signal,
       });
+      if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, { phase: 'response', httpStatus: resp.status }));
 
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
+        if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, { response: text }));
         throw upstreamError(text, resp.status);
       }
 
       // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
-      if (stream) {
-        const streamed = await readSseContent(resp, opts);
+      if (stream && !/\bjson\b/i.test(resp.headers.get('content-type') ?? '')) {
+        const streamed = await readSseContent(resp, { ...opts, onEvidence: text => { streamEvidence = text; }, onDelta: text => {
+          partialResponse = text;
+          opts.onDelta?.(text);
+        } });
         if (!streamed) throw new ApiError('副 API 返回空内容');
         // 流式无 usage:ST 构造上游请求体是字段白名单,不含 stream_options,
         // 没法让上游在末尾回 usage chunk。只能事后本地估算。
         return { content: streamed, usage: { prompt: null, completion: null, cached: null } };
       }
 
-      const data = await resp.json();
+      const raw = await resp.text();
+      if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, { response: raw }));
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new ApiError('副 API 返回的接口响应不是有效 JSON，请在请求历史中查看原始响应。');
+      }
+      if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, {
+        response: extractContent(data) || JSON.stringify(data?.choices?.[0]?.message ?? data),
+        promptTokens: readUsage(data).prompt,
+        completionTokens: readUsage(data).completion,
+        cacheReadTokens: readUsage(data).cached,
+      }));
       if (data?.error) {
         throw upstreamError(data.error.message || '副 API 返回错误');
       }
@@ -376,6 +408,10 @@ async function requestCompletionAtUrl(
     });
 
     // 验收在记历史之前:验收不过 → 落进 catch 记失败,不给「HTTP 成功」的假象
+    if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, {
+      phase: 'validation', response: result.content, promptTokens: result.usage.prompt,
+      completionTokens: result.usage.completion, cacheReadTokens: result.usage.cached,
+    }));
     opts.validate?.(result.content);
 
     if (historyId !== null) {
@@ -396,6 +432,7 @@ async function requestCompletionAtUrl(
   } catch (e) {
     if (opts.direct && e instanceof TypeError) e = new ApiError('浏览器直连失败：请检查网络、HTTPS 和服务商 CORS 许可，或改用酒馆转发。');
     if (historyId !== null) {
+      if (streamEvidence || partialResponse) safeHistory(() => patchLlmResponse(historyId, { response: streamEvidence || partialResponse }));
       const aborted = e instanceof DOMException && e.name === 'AbortError';
       safeHistory(() => failLlm(historyId, e instanceof Error ? e.message : String(e), aborted));
     }
@@ -409,7 +446,7 @@ async function requestCompletionAtUrl(
  * 推理模型的思维链增量(delta.reasoning 等)单独缓冲:只有 content 全空时才回退用它,
  * 避免在 content 正常时把思维链混进正文。
  */
-export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 'imagePlanTool' | 'onDelta'> = {}): Promise<string> {
+export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 'imagePlanTool' | 'onDelta'> & { onEvidence?: (text: string) => void } = {}): Promise<string> {
   const reader = resp.body?.getReader();
   if (!reader) {
     // 无法流式读取(理论上不会):退回当作整体 JSON 处理
@@ -421,10 +458,24 @@ export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 
   let out = '';
   let reasoningOut = '';
   let terminated = false;
+  let sawData = false;
+  let evidence = '';
+  let evidenceTruncated = false;
+  // Keep the tail independently of preview text so late gateway errors survive.
+  const appendChunk = (text: string) => {
+    buf += text;
+    evidence += text;
+    if (evidence.length > 18_000) {
+      evidence = evidence.slice(-18_000);
+      evidenceTruncated = true;
+    }
+    opts.onEvidence?.(`${evidenceTruncated ? '[Earlier stream data omitted]\n' : ''}${evidence}`);
+  };
   const calls = new Map<number, { type: string; function: { name: string; arguments: string } }>();
   const consume = (line: string) => {
     const t = line.trim();
     if (!t.startsWith('data:')) return;
+    sawData = true;
     const payload = t.slice(5).trim();
     if (payload === '[DONE]') { terminated = true; return; }
     let json: any;
@@ -457,14 +508,21 @@ export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 
   try {
     for (; ;) {
       const { done, value } = await reader.read();
-      if (done) { buf += decoder.decode(); break; }
-      buf += decoder.decode(value, { stream: true });
+      if (done) { appendChunk(decoder.decode()); break; }
+      appendChunk(decoder.decode(value, { stream: true }));
       // 按行解析,保留最后一段不完整的行到下次
       const lines = buf.split('\n');
       buf = lines.pop() ?? '';
       for (const line of lines) consume(line);
     }
     if (buf.trim()) consume(buf);
+    if (!sawData && evidence.trim()) {
+      let data;
+      try { data = JSON.parse(evidence); }
+      catch { throw new ApiError('副 API 未返回有效的流式响应，请在请求历史中查看原始响应。'); }
+      if (data?.error) throw upstreamError(data.error.message || '副 API 返回错误');
+      return extractCompletion(data, opts.imagePlanTool);
+    }
     if (opts.imagePlanTool) {
       if (!terminated) throw new ApiError('工具流意外中断，未确认完成');
       return imagePlanArguments([...calls.values()]);
@@ -556,6 +614,7 @@ export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOption
       model: '',
       stream: false,
       messages,
+      transport: 'main',
     }),
   );
 
@@ -564,6 +623,7 @@ export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOption
     opts.signal?.throwIfAborted();
     if (!content) throw new ApiError('主 API 返回空内容');
     // 与副 API 同口径:验收不过记失败,不记「成功」
+    if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, { phase: 'validation', response: content }));
     opts.validate?.(content);
     if (historyId !== null) {
       safeHistory(() =>
