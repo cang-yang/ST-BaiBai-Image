@@ -7,7 +7,7 @@ import {
   type CharTagEntry,
   type CharTagField,
 } from '@/state/charTags';
-import { getTagGenChannel } from '@/state/settings';
+import { getTagGenChannel, settings } from '@/state/settings';
 
 /**
  * 角色固定外貌库的「锚定」侧。
@@ -152,7 +152,7 @@ export async function generateCharTags(
   ];
   const channel = getTagGenChannel();
   const raw = channel
-    ? await requestCompletion(channel, messages, { signal, source: '角色外貌转换' })
+    ? await requestCompletion(channel, messages, { signal, source: '角色外貌转换', direct: settings.imagePresets.directChannels.includes(channel.id) })
     : await requestViaMainApi(messages, { signal, source: '角色外貌转换' });
   const parsed = parseConvertedTags(raw);
   const out: ConvertedChar[] = [];

@@ -4,7 +4,7 @@ import {
   parseWorkflowTemplate,
   type ComfyWorkflow,
 } from '@/backends/comfyui';
-import { getTagGenChannel } from '@/state/settings';
+import { getTagGenChannel, settings } from '@/state/settings';
 
 export type WorkflowBindingPurpose =
   | 'positive_tag'
@@ -307,7 +307,7 @@ export async function configureWorkflowWithAi(
   ];
   const channel = getTagGenChannel();
   const raw = channel
-    ? await requestCompletion(channel, messages, { signal, source: 'ComfyUI 工作流配置' })
+    ? await requestCompletion(channel, messages, { signal, source: 'ComfyUI 工作流配置', direct: settings.imagePresets.directChannels.includes(channel.id) })
     : await requestViaMainApi(messages, { signal, source: 'ComfyUI 工作流配置' });
   return applyWorkflowBindings(template, parseWorkflowBindings(raw));
 }

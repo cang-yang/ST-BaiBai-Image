@@ -13,6 +13,7 @@ import {
 } from '@/state/settings';
 import type { STContext } from '@/st/context';
 import { applyMangaFrames, mangaDefaults } from '@/manga/layouts';
+import { newImagePreset } from '@/presets/model';
 
 /**
  * 提示词集:全部留空(= 回落内置默认),只把本用例关心的那几项覆盖掉。
@@ -61,6 +62,30 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
+  it('uses a native preset without the legacy prefix while retaining host position and output contracts', async () => {
+    const preset = newImagePreset();
+    preset.output = 'tool';
+    preset.useBackendRules = false;
+    preset.entries[0].content = 'CUSTOM_RULE {{user}} {{max_images}}';
+    const options: AutoTagSettings = {
+      enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 1,
+      autoGenerate: true, prompts: prompts({ jailbreak: 'LEGACY_PREFIX', comfySpec: 'LEGACY_SPEC' }),
+    };
+    const messages = await buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', autoTagProfile(), preset);
+    const text = messages.map(m => m.content).join('\n');
+    expect(text).toContain('CUSTOM_RULE User 3');
+    expect(text).not.toContain('LEGACY_PREFIX');
+    expect(messages.some(m => m.purpose === 'contract')).toBe(true);
+    expect(text).toContain('submit_image_plan');
+    expect(text).toContain('目标第一行');
+    expect(text).toContain('P1');
+    expect(messages.some(m => m.purpose === 'check')).toBe(false);
+    preset.useBackendRules = true;
+    const withChecks = await buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', autoTagProfile(), preset);
+    expect(withChecks.find(m => m.purpose === 'check')?.content).toContain('仅供内部核对');
+    preset.entries[0].content = '{{not_provided}}';
+    await expect(buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', autoTagProfile(), preset)).rejects.toThrow(/not_provided/);
+  });
   it('协议示例只选启用版式，不引用已删除的 balanced_1，空清单时阻止请求',async()=>{
     const oldBackend=settings.defaultBackend, oldManga=settings.manga;
     const options:AutoTagSettings={enabled:true,contextMessages:2,minImages:0,maxImages:3,retryCount:1,autoGenerate:true,prompts:prompts({jailbreak:'TEST_PREFIX'})};

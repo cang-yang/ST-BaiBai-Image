@@ -1,0 +1,167 @@
+import type { ChatMsg } from '@/api/client';
+
+export interface PromptEntry {
+  id: string;
+  name: string;
+  enabled: boolean;
+  role: ChatMsg['role'];
+  content: string;
+  trigger: 'always' | 'keywords';
+  keywords: string;
+  andKeywords: string;
+}
+
+export interface ImagePromptPreset {
+  id: string;
+  name: string;
+  description: string;
+  output: 'text' | 'tool';
+  useBackendRules: boolean;
+  entries: PromptEntry[];
+  variables: Record<string, string>;
+  warnings: string[];
+}
+
+export interface ImagePresetSettings {
+  activeId: string;
+  presets: ImagePromptPreset[];
+  /** Plugin-local: shared API channel normalization must not erase this preference. */
+  directChannels: string[];
+}
+
+export const PRESET_FORMAT = 'baibai_image_prompt_preset';
+export const MAX_PRESET_BYTES = 2_000_000;
+export const MAX_LIBRARY_BYTES = 10_000_000;
+const MAX_ENTRIES = 2000;
+const record = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
+const text = (v: unknown, fallback = ''): string => typeof v === 'string' ? v : fallback;
+const id = (): string => crypto.randomUUID();
+
+export function presetDefaults(): ImagePresetSettings {
+  return { activeId: '', presets: [], directChannels: [] };
+}
+
+export function newPromptEntry(): PromptEntry {
+  return { id: id(), name: '新条目', enabled: true, role: 'system', content: '', trigger: 'always', keywords: '', andKeywords: '' };
+}
+
+export function newImagePreset(): ImagePromptPreset {
+  return {
+    id: id(), name: '我的正文配图', description: '', output: 'text', useBackendRules: true,
+    entries: [{ ...newPromptEntry(), name: '画面要求', content: '忠于正文，保持人物外貌与场景连续。优先选择有明确主体、动作和情绪的画面。' }],
+    variables: {}, warnings: [],
+  };
+}
+
+function readPreset(raw: unknown, freshIds: boolean): ImagePromptPreset {
+  if (!record(raw) || !Array.isArray(raw.entries)) throw new Error('预设需要 entries 条目列表');
+  if (raw.entries.length > MAX_ENTRIES) throw new Error(`单份预设最多 ${MAX_ENTRIES} 个条目`);
+  const entries = raw.entries.map((e: unknown, index: number): PromptEntry => {
+    if (!record(e) || typeof e.content !== 'string') throw new Error(`第 ${index + 1} 个条目缺少文本 content`);
+    if (!['system', 'user', 'assistant'].includes(e.role)) throw new Error(`第 ${index + 1} 个条目的角色不支持`);
+    if (e.trigger !== undefined && !['always', 'keywords'].includes(e.trigger)) throw new Error(`第 ${index + 1} 个条目的触发方式不支持`);
+    return {
+      id: freshIds ? id() : text(e.id) || id(), name: text(e.name, `条目 ${index + 1}`),
+      enabled: e.enabled !== false, role: e.role, content: e.content,
+      trigger: e.trigger === 'keywords' ? 'keywords' : 'always',
+      keywords: text(e.keywords), andKeywords: text(e.andKeywords),
+    };
+  });
+  if (new Set(entries.map(e => e.id)).size !== entries.length) throw new Error('条目 ID 重复');
+  if (raw.output !== undefined && !['text', 'tool'].includes(raw.output)) throw new Error('不支持的输出方式');
+  const variables: Record<string, string> = Object.create(null);
+  if (raw.variables !== undefined && !record(raw.variables)) throw new Error('变量必须是名称与文本组成的对象');
+  for (const [key, value] of Object.entries(raw.variables ?? {})) {
+    if (!/^[\w\u3400-\u9fff.-]{1,80}$/.test(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error(`变量名不合法: ${key}`);
+    if (typeof value !== 'string') throw new Error(`变量 ${key} 的值必须是文本`);
+    variables[key] = value;
+  }
+  return {
+    id: freshIds ? id() : text(raw.id) || id(), name: text(raw.name).trim() || '未命名预设',
+    description: text(raw.description), output: raw.output === 'tool' ? 'tool' : 'text',
+    useBackendRules: raw.useBackendRules !== false, entries, variables,
+    warnings: Array.isArray(raw.warnings) ? raw.warnings.filter((v: unknown) => typeof v === 'string').slice(0, 50) : [],
+  };
+}
+
+export function validatePreset(raw: unknown): ImagePromptPreset {
+  if (new Blob([JSON.stringify(raw)]).size > MAX_PRESET_BYTES) throw new Error('单份预设不能超过 2 MB');
+  return readPreset(raw, false);
+}
+
+export function normalizeImagePresets(raw: unknown): ImagePresetSettings {
+  if (!record(raw)) return presetDefaults();
+  const presets: ImagePromptPreset[] = [];
+  for (const item of Array.isArray(raw.presets) ? raw.presets : []) {
+    try {
+      const preset = validatePreset(item);
+      if (presets.some(p => p.id === preset.id)) preset.id = id();
+      presets.push(preset);
+    } catch { /* Preserve other valid presets if one saved record is corrupt. */ }
+  }
+  return {
+    activeId: presets.some(p => p.id === raw.activeId) ? raw.activeId : '', presets,
+    directChannels: Array.isArray(raw.directChannels) ? [...new Set(raw.directChannels.filter((v: unknown): v is string => typeof v === 'string'))] as string[] : [],
+  };
+}
+
+export function snapshotPreset(config: ImagePresetSettings): ImagePromptPreset | null {
+  if (!config.activeId) return null;
+  const found = config.presets.find(p => p.id === config.activeId);
+  if (!found) throw new Error('所选配图预设不存在，请重新选择');
+  return validatePreset(JSON.parse(JSON.stringify(found)));
+}
+
+export function exportPreset(preset: ImagePromptPreset): string {
+  // Explicit allowlist: no channel, key, host settings or unrelated request profiles.
+  const { name, description, output, useBackendRules, entries, variables, warnings } = validatePreset(preset);
+  return JSON.stringify({ format: PRESET_FORMAT, version: 1, preset: { name, description, output, useBackendRules, entries, variables, warnings } }, null, 2);
+}
+
+function fromLegacy(name: string, raw: unknown): ImagePromptPreset {
+  if (!record(raw) || !Array.isArray(raw.entries)) throw new Error(`预设 ${name} 缺少 entries`);
+  const entries = raw.entries.map((e: any) => ({
+    ...e, trigger: e.triggerMode === 'trigger' ? 'keywords' : 'always',
+    keywords: text(e.triggerWords), andKeywords: text(e.andTriggerWords),
+  }));
+  return readPreset({
+    name, entries, useBackendRules: true,
+    description: '从智绘姬正文配图预设转换',
+    warnings: [
+      '仅转换提示词条目、启用状态和关键词条件；不导入 API 档案或其他任务。',
+      '最终输出统一使用柏宝绘 JSON 协议；原预设的 XML、挂载正则和 ToolCall 引导不会作为可执行协议。',
+      '不提供智绘姬专属服装库、角色调用或脚本环境；未知变量会在检查时报告，需自行补全或停用相关条目。',
+    ],
+  }, true);
+}
+
+export function importPresets(json: string, filename = '导入预设'): ImagePromptPreset[] {
+  if (new Blob([json]).size > MAX_PRESET_BYTES) throw new Error('导入文件不能超过 2 MB');
+  let raw: unknown;
+  try { raw = JSON.parse(json); } catch { throw new Error('文件不是有效的 JSON'); }
+  if (record(raw) && raw.format === PRESET_FORMAT) {
+    if (raw.version !== 1) throw new Error(`不支持的预设版本 ${raw.version}`);
+    return [readPreset(raw.preset, true)];
+  }
+  if (record(raw) && raw.type === 'st_chatu8_request_type_profile') {
+    const name = raw.request_type_profile?.image_gen?.context_profile;
+    if (typeof name !== 'string' || !raw.context_presets?.[name]) throw new Error('档案中没有可用的正文配图 image_gen 预设');
+    return [fromLegacy(name, raw.context_presets[name])];
+  }
+  if (record(raw) && Array.isArray(raw.entries)) {
+    return ['triggerMode', 'triggerWords'].some(k => raw.entries.some((e: any) => record(e) && k in e))
+      ? [fromLegacy(text(raw.name, filename), raw)]
+      : [readPreset({ ...raw, name: text(raw.name, filename) }, true)];
+  }
+  const messages = Array.isArray(raw) ? raw : record(raw) ? raw.messages : null;
+  if (Array.isArray(messages)) {
+    return [readPreset({ name: filename.replace(/\.json$/i, ''), entries: messages }, true)];
+  }
+  if (record(raw)) {
+    const pairs = Object.entries(raw);
+    if (pairs.length && pairs.every(([, p]) => record(p) && Array.isArray(p.entries))) {
+      return pairs.map(([name, p]) => fromLegacy(name, p));
+    }
+  }
+  throw new Error('无法识别此文件。支持柏宝绘预设、role/content 消息列表和智绘姬正文配图预设；世界书请在生图世界书中导入。');
+}

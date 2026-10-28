@@ -1,5 +1,6 @@
 import { getContext } from '@/st/context';
 import type { ApiChannel } from '@/state/settings';
+import { IMAGE_PLAN_TOOLS, IMAGE_PLAN_TOOL_CHOICE, imagePlanArguments } from './imagePlanTool';
 import {
   beginLlm,
   failLlm,
@@ -70,6 +71,10 @@ function alternateUrl(url: string): string {
 }
 
 export interface RequestOptions {
+  imagePlanTool?: boolean;
+  direct?: boolean;
+  /** Preview only; incomplete deltas must never be used to generate an image. */
+  onDelta?: (text: string) => void;
   signal?: AbortSignal;
   /**
    * 用途标签,只用于请求历史页的展示(如「自动 tag」)。
@@ -184,7 +189,7 @@ export async function requestCompletion(
 /**
  * 构造发给 ST 代理的请求体(纯函数,便于测两条分支的产物)。
  *
- * 两条分支,按渠道有没有设思考强度二选一:
+ * 普通文本按渠道有没有设思考强度二选一；工具模式使用 custom 源透传完整工具定义。
  *
  * ① 未设(reasoningEffort 为空 = auto):走 `chat_completion_source: 'openai'`,
  *    除下面固定的 `tool_choice` 外,与加本功能之前**逐字节一致**——存量用户零变化。
@@ -196,7 +201,7 @@ export async function requestCompletion(
  *    不过任何白名单,任意字段/嵌套对象都能透传。
  *
  * 两条路都仍然走 ST 服务端转发(同一个 /generate 端点),没有浏览器直连,
- * 因此 CORS、密钥不落浏览器、SSE 转发等性质完全不变。
+ * 因此不受上游浏览器 CORS 限制。可选直连由 buildDirectBody 单独构造。
  *
  * custom 源的两个坑(都已规避):
  * - 它**不读 proxy_password**,只读 ST 自己存的 Custom 密钥,所以 key 必须靠
@@ -207,7 +212,7 @@ export async function requestCompletion(
  *   退回用 ST 的 Custom 密钥,可能把用户另一个服务商的 key 发到本端点。
  *   故一律用 JSON.stringify 生成(YAML 是 JSON 的超集),转义交给它,不手拼。
  *
- * 另:请求体固定带 `tool_choice: 'none'`,这是给第三方 fetch 拦截器的声明式放行握手。
+ * 另:普通文本请求体带 `tool_choice: 'none'`,这是给第三方 fetch 拦截器的声明式放行握手。
  * 酒馆助手预设脚本(如 Kemini Dramatron 面板)可能 monkey-patch `window.parent.fetch`,
  * 拦截所有 `/api/backends/…/generate` 请求并注入合成工具 + 控制消息,让模型把整段输出
  * 塞进工具调用。对生图 tag 这种「要严格 JSON 协议」的请求,它会把控制消息插进对话、
@@ -215,7 +220,8 @@ export async function requestCompletion(
  * 这类拦截器普遍支持「调用方自带 tool_choice 就放行」(Dramatron 的 callerControlsTools
  * 对 'none' 明确 bypass),所以我们主动声明不用工具。
  * 对上游无影响:ST 服务端只在 tools 为非空数组时才转发 tool_choice
- * (src/endpoints/backends/chat-completions.js),本函数从不发 tools,该字段到不了服务商。
+ * (src/endpoints/backends/chat-completions.js),普通文本模式不发 tools,该字段到不了服务商。
+ * 工具模式则显式发送受控的 tool_choice 和 tools。
  *
  * (与柏宝书 src/api/client.ts 的同名函数同源,行为保持一致。)
  */
@@ -225,6 +231,7 @@ export function buildRequestBody(
   reverseProxy: string,
   stream: boolean,
   dshSession?: DshSessionRequest,
+  imagePlanTool = false,
 ): Record<string, unknown> {
   const effort = channel.reasoningEffort?.trim() ?? '';
   const common = {
@@ -240,13 +247,15 @@ export function buildRequestBody(
     frequency_penalty: 0,
   };
 
-  const body: Record<string, unknown> = effort || dshSession
+  const toolFields = imagePlanTool ? { tools: IMAGE_PLAN_TOOLS, tool_choice: IMAGE_PLAN_TOOL_CHOICE, parallel_tool_calls: false } : {};
+  const body: Record<string, unknown> = effort || dshSession || imagePlanTool
     ? {
         chat_completion_source: 'custom',
         custom_url: reverseProxy,
         custom_include_headers: JSON.stringify({ Authorization: `Bearer ${channel.key || ''}` }),
-        custom_include_body: JSON.stringify({ ...(effort ? {reasoning_effort:effort} : {}), ...(dshSession ? {dsh_session:dshSession} : {}) }),
+        custom_include_body: JSON.stringify({ ...(effort ? {reasoning_effort:effort} : {}), ...(dshSession ? {dsh_session:dshSession} : {}), ...toolFields }),
         ...common,
+        ...toolFields,
       }
     : {
         chat_completion_source: 'openai',
@@ -258,10 +267,32 @@ export function buildRequestBody(
   // 排除参数:把用户指定的字段从 body 删掉,规避不接受这些参数的兼容端点报错。
   for (const p of channel.excludeParams ?? []) {
     const key = p.trim();
+    if (imagePlanTool && ['messages', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream', 'custom_include_body', 'custom_include_headers', 'chat_completion_source', 'custom_url'].includes(key)) throw new ApiError(`工具输出不能排除参数 ${key}`);
     if (dshSession && ['messages','stream','custom_include_body','custom_include_headers','chat_completion_source','custom_url'].includes(key)) throw new ApiError(`DSH 持久会话不能排除参数 ${key}`);
     if (key) delete body[key];
   }
   return body;
+}
+
+export function buildDirectBody(channel: ApiChannel, messages: ChatMsg[], stream: boolean, imagePlanTool = false): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: channel.model, messages: wireMessages(messages), stream,
+    temperature: channel.temperature ?? 1, max_tokens: channel.maxTokens ?? 65535,
+    ...(channel.reasoningEffort?.trim() ? { reasoning_effort: channel.reasoningEffort.trim() } : {}),
+    ...(imagePlanTool ? { tools: IMAGE_PLAN_TOOLS, tool_choice: IMAGE_PLAN_TOOL_CHOICE, parallel_tool_calls: false } : {}),
+  };
+  for (const key of channel.excludeParams ?? []) {
+    if (['model', 'messages', 'stream'].includes(key.trim()) || (imagePlanTool && ['tools', 'tool_choice', 'parallel_tool_calls'].includes(key.trim()))) throw new ApiError(`直连请求不能排除参数 ${key}`);
+    delete body[key.trim()];
+  }
+  return body;
+}
+
+function directEndpoint(base: string, endpoint: string): string {
+  let url: URL;
+  try { url = new URL(`${base}/${endpoint}`); } catch { throw new ApiError('直连 API 地址不是有效的网址'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new ApiError('直连 API 地址只能使用不含账号、查询参数或片段的 HTTP(S) 地址');
+  return url.href;
 }
 
 async function requestCompletionAtUrl(
@@ -275,7 +306,11 @@ async function requestCompletionAtUrl(
   if (!channel.url || !channel.model) throw new ApiError('副 API 渠道未配置完整(缺 url 或 model)');
 
   const stream = opts.dshSession ? false : channel.stream ?? false;
-  const body = buildRequestBody(channel, messages, reverseProxy, stream, opts.dshSession);
+  if (opts.dshSession && (opts.direct || opts.imagePlanTool)) throw new ApiError('DSH 会话暂不能与直连或工具输出同时使用');
+  const body = opts.direct
+    ? buildDirectBody(channel, messages, stream, opts.imagePlanTool)
+    : buildRequestBody(channel, messages, reverseProxy, stream, opts.dshSession, opts.imagePlanTool);
+  const endpoint = opts.direct ? directEndpoint(reverseProxy, 'chat/completions') : GENERATE_URL;
 
   const timeoutSec = validTimeoutSec(channel.timeoutSec);
 
@@ -292,9 +327,10 @@ async function requestCompletionAtUrl(
 
   try {
     const result = await withTimeout(timeoutSec, opts.signal, '副 API 请求', async signal => {
-      const resp = await fetch(GENERATE_URL, {
+      const resp = await fetch(endpoint, {
         method: 'POST',
-        headers: ctx.getRequestHeaders(),
+        headers: opts.direct ? { 'Content-Type': 'application/json', ...(channel.key ? { Authorization: `Bearer ${channel.key}` } : {}) } : ctx.getRequestHeaders(),
+        ...(opts.direct ? { credentials: 'omit' as const, redirect: 'error' as const } : {}),
         body: JSON.stringify(body),
         signal,
       });
@@ -306,7 +342,7 @@ async function requestCompletionAtUrl(
 
       // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
       if (stream) {
-        const streamed = await readSseContent(resp);
+        const streamed = await readSseContent(resp, opts);
         if (!streamed) throw new ApiError('副 API 返回空内容');
         // 流式无 usage:ST 构造上游请求体是字段白名单,不含 stream_options,
         // 没法让上游在末尾回 usage chunk。只能事后本地估算。
@@ -322,7 +358,7 @@ async function requestCompletionAtUrl(
       if (opts.dshSession && opts.dshSession.action !== 'generate') {
         return {content:extractContent(data) || (opts.dshSession.action==='reset' ? 'DSH 会话已重建' : '固定规范已发送'),usage:readUsage(data)};
       }
-      const parsed = extractContent(data);
+      const parsed = extractCompletion(data, opts.imagePlanTool);
       if (!parsed) throw new ApiError('副 API 返回空内容');
       // ST 代理非流式分支是 response.send(json) 原样透传,故 usage 是上游真值。
       return { content: parsed, usage: readUsage(data) };
@@ -347,6 +383,7 @@ async function requestCompletionAtUrl(
     }
     return result.content;
   } catch (e) {
+    if (opts.direct && e instanceof TypeError) e = new ApiError('浏览器直连失败：请检查网络、HTTPS 和服务商 CORS 许可，或改用酒馆转发。');
     if (historyId !== null) {
       const aborted = e instanceof DOMException && e.name === 'AbortError';
       safeHistory(() => failLlm(historyId, e instanceof Error ? e.message : String(e), aborted));
@@ -361,46 +398,80 @@ async function requestCompletionAtUrl(
  * 推理模型的思维链增量(delta.reasoning 等)单独缓冲:只有 content 全空时才回退用它,
  * 避免在 content 正常时把思维链混进正文。
  */
-export async function readSseContent(resp: Response): Promise<string> {
+export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 'imagePlanTool' | 'onDelta'> = {}): Promise<string> {
   const reader = resp.body?.getReader();
   if (!reader) {
     // 无法流式读取(理论上不会):退回当作整体 JSON 处理
     const data = await resp.json().catch(() => null);
-    return data ? extractContent(data) : '';
+    return data ? extractCompletion(data, opts.imagePlanTool) : '';
   }
   const decoder = new TextDecoder();
   let buf = '';
   let out = '';
   let reasoningOut = '';
-  for (; ;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    // 按行解析,保留最后一段不完整的行到下次
-    const lines = buf.split('\n');
-    buf = lines.pop() ?? '';
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t || !t.startsWith('data:')) continue;
-      const payload = t.slice(5).trim();
-      if (payload === '[DONE]') continue;
-      try {
-        const json = JSON.parse(payload);
-        if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
-        const choice = json?.choices?.[0];
-        const src = choice?.delta ?? choice?.message;
-        const piece = textOf(src?.content) || textOf(choice?.text);
-        if (piece) out += piece;
-        const reasoningPiece =
-          textOf(src?.reasoning) || textOf(src?.reasoning_content) || textOf(src?.thinking);
-        if (reasoningPiece) reasoningOut += reasoningPiece;
-      } catch (e) {
-        if (e instanceof ApiError) throw e;
-        // 单行解析失败忽略(可能是注释行/心跳)
+  let terminated = false;
+  const calls = new Map<number, { type: string; function: { name: string; arguments: string } }>();
+  const consume = (line: string) => {
+    const t = line.trim();
+    if (!t.startsWith('data:')) return;
+    const payload = t.slice(5).trim();
+    if (payload === '[DONE]') { terminated = true; return; }
+    let json: any;
+    try { json = JSON.parse(payload); }
+    catch {
+      if (opts.imagePlanTool) throw new ApiError('工具流包含损坏的数据片段');
+      return;
+    }
+    if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
+    const choice = json?.choices?.[0];
+    if (['length', 'content_filter'].includes(choice?.finish_reason)) throw new ApiError(`副 API 输出未完成 (${choice.finish_reason})`);
+    if (choice?.finish_reason) terminated = true;
+    const src = choice?.delta ?? choice?.message;
+    const piece = textOf(src?.content) || textOf(choice?.text);
+    out += piece;
+    reasoningOut += textOf(src?.reasoning) || textOf(src?.reasoning_content) || textOf(src?.thinking);
+    if (Array.isArray(src?.tool_calls)) {
+      for (const delta of src.tool_calls) {
+        const index = delta.index ?? 0;
+        if (!Number.isSafeInteger(index) || index < 0 || index > 16) throw new ApiError('工具调用编号无效');
+        const call = calls.get(index) ?? { type: '', function: { name: '', arguments: '' } };
+        if (delta.type) call.type = delta.type;
+        call.function.name += textOf(delta.function?.name);
+        call.function.arguments += textOf(delta.function?.arguments);
+        calls.set(index, call);
       }
     }
+    opts.onDelta?.(opts.imagePlanTool ? [...calls.values()].map(c => c.function.arguments).join('\n') : out);
+  };
+  try {
+    for (; ;) {
+      const { done, value } = await reader.read();
+      if (done) { buf += decoder.decode(); break; }
+      buf += decoder.decode(value, { stream: true });
+      // 按行解析,保留最后一段不完整的行到下次
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) consume(line);
+    }
+    if (buf.trim()) consume(buf);
+    if (opts.imagePlanTool) {
+      if (!terminated) throw new ApiError('工具流意外中断，未确认完成');
+      return imagePlanArguments([...calls.values()]);
+    }
+    if (calls.size) throw new ApiError('收到工具调用，请在配图预设中选择工具输出');
+    return out.trim() || reasoningOut.trim();
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
-  return out.trim() || reasoningOut.trim();
+}
+
+export function extractCompletion(data: any, imagePlanTool = false): string {
+  const choice = data?.choices?.[0];
+  if (['length', 'content_filter'].includes(choice?.finish_reason)) throw new ApiError(`副 API 输出未完成 (${choice.finish_reason})`);
+  if (imagePlanTool) return imagePlanArguments(choice?.message?.tool_calls);
+  if (choice?.message?.tool_calls?.length) throw new ApiError('收到工具调用，请在配图预设中选择工具输出');
+  return extractContent(data);
 }
 
 /** 把可能是 string / content-parts 数组 / 其他类型的值转成文本;非字符串成分一律丢弃。 */
@@ -459,6 +530,8 @@ export function mainApiAvailable(): boolean {
  * (如 Kemini 防截断脚本)仍可能改写它。生成 tag 尽量指派副 API 渠道,走 buildRequestBody 那条路。
  */
 export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOptions = {}): Promise<string> {
+  if (opts.imagePlanTool || opts.direct) throw new ApiError('工具输出和浏览器直连需要指派独立副 API 渠道');
+  opts.signal?.throwIfAborted();
   const ctx = getContext();
   if (typeof ctx?.generateRaw !== 'function') {
     throw new ApiError('当前 ST 版本不支持 generateRaw,无法跟随主 API');
@@ -477,6 +550,7 @@ export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOption
 
   try {
     const content = (await ctx.generateRaw({ prompt: wireMessages(messages), responseLength: MAIN_API_RESPONSE_LENGTH }))?.trim();
+    opts.signal?.throwIfAborted();
     if (!content) throw new ApiError('主 API 返回空内容');
     // 与副 API 同口径:验收不过记失败,不记「成功」
     opts.validate?.(content);
@@ -502,14 +576,14 @@ export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOption
 }
 
 /** 连通性测试:发一条极短请求 */
-export async function testChannel(channel: ApiChannel): Promise<{ ok: boolean; message: string }> {
+export async function testChannel(channel: ApiChannel, direct = false): Promise<{ ok: boolean; message: string }> {
   const primaryUrl = normalizeUrl(channel.url);
   try {
     const reply = await requestCompletionAtUrl(
       channel,
       [{ role: 'user', content: '回复"ok"两个字符即可。' }],
       primaryUrl,
-      { source: '连通性测试' },
+      { source: '连通性测试', direct },
     );
     const changed = channel.url.trim().replace(/\/+$/, '') !== primaryUrl;
     if (changed) channel.url = primaryUrl;
@@ -531,7 +605,7 @@ export async function testChannel(channel: ApiChannel): Promise<{ ok: boolean; m
         channel,
         [{ role: 'user', content: '回复"ok"两个字符即可。' }],
         fallbackUrl,
-        { source: '连通性测试(备用地址)' },
+        { source: '连通性测试(备用地址)', direct },
       );
       channel.url = fallbackUrl;
       return {
@@ -553,6 +627,7 @@ const STATUS_URL = '/api/backends/chat-completions/status';
  */
 export async function fetchModels(
   channel: Pick<ApiChannel, 'url' | 'key'> & Partial<Pick<ApiChannel, 'timeoutSec'>>,
+  direct = false,
 ): Promise<string[]> {
   const ctx = getContext();
   if (!ctx) throw new ApiError('SillyTavern 上下文不可用');
@@ -566,10 +641,10 @@ export async function fetchModels(
 
   const timeoutSec = validTimeoutSec(channel.timeoutSec);
   return withTimeout(timeoutSec, undefined, '拉取模型', async signal => {
-    const resp = await fetch(STATUS_URL, {
-      method: 'POST',
-      headers: ctx.getRequestHeaders(),
-      body: JSON.stringify(body),
+    const resp = await fetch(direct ? directEndpoint(normalizeUrl(channel.url), 'models') : STATUS_URL, {
+      method: direct ? 'GET' : 'POST',
+      headers: direct ? (channel.key ? { Authorization: `Bearer ${channel.key}` } : {}) : ctx.getRequestHeaders(),
+      ...(direct ? { credentials: 'omit' as const, redirect: 'error' as const } : { body: JSON.stringify(body) }),
       signal,
     });
 

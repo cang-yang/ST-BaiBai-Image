@@ -20,6 +20,7 @@ import {
 import { getContext } from '@/st/context';
 import { mangaDefaults, normalizeManga, type MangaSettings } from '@/manga/layouts';
 import { imageWorldbookDefaults, normalizeImageWorldbooks, type ImageWorldbookSettings } from '@/worldbook/model';
+import { presetDefaults, normalizeImagePresets, type ImagePresetSettings } from '@/presets/model';
 import { reactive, watch } from 'vue';
 import { newRunningHubPreset, normalizeRunningHub, runningHubDefaults, type RunningHubSettings } from '@/backends/runninghubConfig';
 
@@ -1052,6 +1053,7 @@ export interface ImageSettings {
   /** 漫画 Layout 模式:模型只写符号框(panel/slot),坐标由插件查表注入。 */
   manga: MangaSettings;
   imageWorldbooks: ImageWorldbookSettings;
+  imagePresets: ImagePresetSettings;
 }
 
 // extension_settings 里的命名空间键。
@@ -1221,6 +1223,7 @@ function defaults(): ImageSettings {
     storage: { saveAsJpeg: true },
     manga: mangaDefaults(),
     imageWorldbooks: imageWorldbookDefaults(),
+    imagePresets: presetDefaults(),
   };
 }
 
@@ -1852,6 +1855,7 @@ function normalize(raw: unknown): ImageSettings {
   };
   merged.manga = normalizeManga(r.manga);
   merged.imageWorldbooks = normalizeImageWorldbooks(r.imageWorldbooks);
+  merged.imagePresets = normalizeImagePresets(r.imagePresets);
   return merged;
 }
 
@@ -1884,6 +1888,7 @@ function applyInto(target: ImageSettings, src: ImageSettings): void {
   target.storage = src.storage;
   target.manga = src.manga;
   target.imageWorldbooks = src.imageWorldbooks;
+  target.imagePresets = src.imagePresets;
 }
 
 /* —— 渠道共享存储:与柏宝书等「柏宝」插件共用同一份渠道列表 ——

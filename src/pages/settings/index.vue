@@ -4,6 +4,7 @@ import BbiTextarea from '@/components/BbiTextarea.vue';
 import Collapsible from '@/components/Collapsible.vue';
 import MangaSection from '@/pages/settings/MangaSection.vue';
 import ImageWorldbookSection from '@/pages/settings/ImageWorldbookSection.vue';
+import ImagePresetSection from '@/pages/settings/ImagePresetSection.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
@@ -105,6 +106,7 @@ const editingId = ref<string | null>(null);
 // 编辑用「草稿副本」:v-model 全改在草稿上,只有点「完成」才写回 settings(避免每敲一字就触发存盘)。
 // 弹窗开关也以它为准:草稿存在 = 弹窗打开。
 const editingChannel = ref<ApiChannel | null>(null);
+const editingDirect = ref(false);
 const dshBusy = ref(false), dshNotice = ref('');
 async function sendDshControl(action: 'sync_rules' | 'reset'): Promise<void> {
   if (dshBusy.value) return;
@@ -253,6 +255,7 @@ const excludeParamsText = computed<string>({
 });
 
 function addChannel() {
+  editingDirect.value = false;
   showKey.value = false;
   editingId.value = null; // null = 新建,完成时 push
   editingChannel.value = newChannel(); // 草稿,尚未进 settings
@@ -260,6 +263,7 @@ function addChannel() {
 function openChannel(id: string) {
   const src = settings.channels.find(c => c.id === id);
   if (!src) return;
+  editingDirect.value = settings.imagePresets.directChannels.includes(id);
   showKey.value = false;
   editingId.value = id;
   editingChannel.value = cloneChannel(src); // 编辑草稿副本,不动真身
@@ -274,6 +278,8 @@ function closeChannel() {
 function confirmChannel() {
   const draft = editingChannel.value;
   if (draft) {
+    settings.imagePresets.directChannels = settings.imagePresets.directChannels.filter(id => id !== draft.id);
+    if (editingDirect.value) settings.imagePresets.directChannels.push(draft.id);
     draft.timeoutSec =
       Number.isFinite(draft.timeoutSec) && draft.timeoutSec > 0
         ? Math.floor(draft.timeoutSec)
@@ -304,6 +310,7 @@ function confirmRemoveChannel() {
   editingChannel.value = null;
 }
 function removeChannel(id: string) {
+  settings.imagePresets.directChannels = settings.imagePresets.directChannels.filter(value => value !== id);
   const list = settings.channels;
   const idx = list.findIndex(c => c.id === id);
   if (idx >= 0) list.splice(idx, 1);
@@ -314,7 +321,7 @@ function removeChannel(id: string) {
 const testing = ref<Record<string, string>>({});
 async function doTest(ch: ApiChannel) {
   testing.value[ch.id] = '测试中…';
-  const r = await testChannel(ch);
+  const r = await testChannel(ch, editingChannel.value?.id === ch.id ? editingDirect.value : settings.imagePresets.directChannels.includes(ch.id));
   testing.value[ch.id] = r.message;
 }
 
@@ -325,7 +332,7 @@ async function pullModels(ch: ApiChannel) {
   loadingModels.value[ch.id] = true;
   testing.value[ch.id] = '';
   try {
-    const list = await fetchModels(ch);
+    const list = await fetchModels(ch, editingChannel.value?.id === ch.id ? editingDirect.value : settings.imagePresets.directChannels.includes(ch.id));
     models.value[ch.id] = list;
     if (list.length && !ch.model) ch.model = list[0];
     if (!list.length) testing.value[ch.id] = '未返回任何模型';
@@ -775,6 +782,9 @@ async function confirmUpdate() {
       <Collapsible title="漫画 Layout" :open="false">
         <MangaSection />
       </Collapsible>
+      <Collapsible title="正文配图预设" :open="false">
+        <ImagePresetSection />
+      </Collapsible>
       <Collapsible title="生图世界书" :open="false">
         <ImageWorldbookSection />
       </Collapsible>
@@ -1077,6 +1087,14 @@ async function confirmUpdate() {
         <label class="bbi-switch-row">
           <span class="bbi-modal-label">流式传输</span>
           <input v-model="editingChannel.stream" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <label class="bbi-modal-field">
+          <span class="bbi-modal-label">请求方式 · 仅柏宝绘</span>
+          <select v-model="editingDirect" class="bbi-input" aria-label="副 API 请求方式">
+            <option :value="false">酒馆转发（默认）</option>
+            <option :value="true">浏览器直连</option>
+          </select>
+          <span v-if="editingDirect" class="bbi-field-hint">API 必须允许浏览器跨域访问（CORS）；密钥将由浏览器直接发送到上方 API 地址。连接失败可切回酒馆转发。</span>
         </label>
         <label class="bbi-modal-field">
           <span class="bbi-modal-label">排除参数</span>

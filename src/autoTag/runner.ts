@@ -1,4 +1,5 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
+import { snapshotPreset } from '@/presets/model';
 import { dshChatId, requestDshCompletion, type DshOperation } from '@/api/dsh';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
@@ -308,9 +309,18 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     // 单槽重写:协议强制「恰好 1 张」,并把该槽位当前提示词与其余槽位摘要带给模型
     // (锚住同一个画面、别抢别人的画面)。min/max 要同时覆盖 build 的规则文案与下面的
     // parse 校验,只改一处会自相矛盾。
-    const promptOptions = slot
+    const promptOptions = JSON.parse(JSON.stringify(slot
       ? { ...settings.autoTag, minImages: 1, maxImages: 1 }
-      : settings.autoTag;
+      : settings.autoTag));
+    const preset = snapshotPreset(settings.imagePresets);
+    const selectedChannel = getTagGenChannel();
+    const channel = selectedChannel ? JSON.parse(JSON.stringify(selectedChannel)) as typeof selectedChannel : null;
+    const direct = !!channel && settings.imagePresets.directChannels.includes(channel.id);
+    const imagePlanTool = preset?.output === 'tool';
+    const dshOn = promptOptions.dshSession === true;
+    if (imagePlanTool && !channel) throw new Error('工具输出需要在“生成 tag 使用”中指派独立副 API 渠道。');
+    if (dshOn && (preset || direct)) throw new Error('自定义配图预设或浏览器直连暂不能与 DSH 持久会话同时使用，请关闭 DSH。');
+    if (dshOn && !channel) throw new Error('DSH 持久会话需要先为“生成 tag 使用”指派独立副 API 渠道。');
     // 协议形态开跑时快照一次:写协议、验收与收尾同一份,用户中途拨开关也不会前后不一
     const profile = autoTagProfile();
     const messages = await buildAutoTagMessages(
@@ -322,16 +332,14 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       anchors.text,
       slot ? buildSlotTaskNote(rawSource, slot.seq) : '',
       profile,
+      preset,
     );
-    const channel = getTagGenChannel();
-    const dshOn = settings.autoTag.dshSession === true;
-    if (dshOn && !channel) throw new Error('DSH 持久会话需要先为“生成 tag 使用”指派独立副 API 渠道。');
     const dshOperation: DshOperation = {};
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
     // 中止信号立即收手,不消耗重试。parseImagePlan 对坏输出抛错,「无画面」则是正常返回空数组。
     // 解析/校验放进 validate 回调:不过则请求历史如实记为失败(而非「HTTP 拿到文本」的绿色成功),
     // 错误原样抛回这里走重试——显示与行为同口径。
-    const retries = Math.max(0, Math.floor(Number(settings.autoTag.retryCount) || 0));
+    const retries = Math.max(0, Math.floor(Number(promptOptions.retryCount) || 0));
     let plan: ImagePlan | null = null;
     let lastError = '';
     for (let attempt = 0; attempt <= retries && !plan; attempt++) {
@@ -376,6 +384,8 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           });
         } else if (channel) {
           await requestCompletion(channel, messages, {
+            direct,
+            imagePlanTool,
             signal: controller.signal,
             source,
             validate,
@@ -723,6 +733,7 @@ export function bindAutoTagging(): void {
 export async function controlDshSession(action: 'sync_rules' | 'reset'): Promise<string> {
   const context=getContext(), channel=getTagGenChannel();
   if (!settings.autoTag.dshSession || !channel) throw new Error('请启用 DSH 持久会话并指派副 API 渠道。');
+  if (settings.imagePresets.activeId || settings.imagePresets.directChannels.includes(channel.id)) throw new Error('自定义配图预设或浏览器直连暂不能与 DSH 持久会话同时使用。');
   if (!context?.getCurrentChatId()) throw new Error('请先打开一个酒馆聊天。');
   const expectedChatId=dshChatId(context);
   let messages: Awaited<ReturnType<typeof buildAutoTagMessages>>=[];
