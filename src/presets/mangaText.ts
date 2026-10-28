@@ -11,7 +11,10 @@ export const MANGA_TEXT_REQUIREMENT = `【漫画文字要求：必须有叙事�
 不得为减少排版工作而选择整页静默、隐藏关键消息、把重要屏幕文字改为 unreadable / illegible / blank。消息可放在独立的清晰展示框中，并明确来自手机消息，不强塞进倾斜的小屏幕。
 文字过长时，先选择更短但完整的事件，或调整合法版式与字区；同一发言内不要跳句拼接，不删关键回应，不以几句无关文字凑数。每页完成后检查文字项与可读性；只提交最终完整配图计划。`;
 
-export class MangaTextError extends Error {}
+export class MangaTextError extends Error {
+  correctionKind = '文字';
+  correctionInstruction = '每页至少一个有原文依据的叙事 text，分配合法字区并明确文字类型。不要编造台词，不把关键文字改成不可读。';
+}
 /** Terminal for the operation, even when the caller has general retries enabled. */
 export class MangaTextCorrectionError extends Error {}
 
@@ -59,12 +62,12 @@ export async function withMangaTextCorrection(
     signal?.throwIfAborted();
     if (!(error instanceof MangaTextError)) throw error;
     const correction: ChatMsg = { role: 'user', content:
-      `漫画文字检查未通过：${error.message}\n这是唯一一次文字补正。依据上面的目标正文重新提交完整配图计划，每页至少一个有原文依据的叙事 text，分配合法字区并明确文字类型。不要编造台词，不输出解释或推理，不把关键文字改成不可读。` };
+      `漫画${error.correctionKind}检查未通过：${error.message}\n这是唯一一次补正。依据上面的目标正文重新提交完整配图计划。${error.correctionInstruction}保留已满足的文字与构图要求，不输出解释或推理。` };
     try {
-      return await send([...messages, correction], `${source} · 文字补正 1/1`, validate);
+      return await send([...messages, correction], `${source} · ${error.correctionKind}补正 1/1`, validate);
     } catch (lastError) {
       signal?.throwIfAborted();
-      throw new MangaTextCorrectionError(`文字补正未通过，已停止生图：${lastError instanceof Error ? lastError.message : String(lastError)}`);
+      throw new MangaTextCorrectionError(`${error.correctionKind}补正未通过，已停止生图：${lastError instanceof Error ? lastError.message : String(lastError)}`);
     }
   }
 }

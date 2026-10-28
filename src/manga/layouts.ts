@@ -7,7 +7,7 @@ export type { FrameBox, MangaLayoutDef, MangaOrientation, MangaPanel };
 export function slotType(key: string): string { return key.replace(/_[1-9]\d*$/, ''); }
 
 /** Use the actual frame outline, including slanted edges, for subject breakout. */
-function crossingSubjects(panel: MangaPanel): string[] {
+export function crossingSubjects(panel: MangaPanel): string[] {
   const box=panel.slots.F;
   if (!box) return [];
   const [top,left,bottom,right]=box;
@@ -16,6 +16,8 @@ function crossingSubjects(panel: MangaPanel): string[] {
     if (!['S','L','R'].includes(slotType(key))) return false;
     const [y1,x1,y2,x2]=region;
     const points=panel.shapes?.[key] ?? [[x1,y1],[x2,y1],[x2,y2],[x1,y2]];
+    if (!framesOverlap(panel, { position: key, slots: { F: region },
+      ...(panel.shapes?.[key] ? { shapes: { F: panel.shapes[key] } } : {}) })) return false;
     return points.some(([x,y])=>outline.some(([ax,ay],i)=>{
       const [bx,by]=outline[(i+1)%outline.length];
       return (bx-ax)*(y-ay)-(by-ay)*(x-ax)<-.01;
@@ -192,7 +194,7 @@ export function resolveLayout(
   return resolveLayouts(manga, orientation).find(layout => layout.id === id) ?? null;
 }
 
-function panelRefIndex(layout: ResolvedLayout, ref: unknown): MangaPanel | null {
+export function panelRefIndex(layout: ResolvedLayout, ref: unknown): MangaPanel | null {
   if (typeof ref === 'number' && Number.isInteger(ref)) {
     return layout.panels[ref - 1] ?? null;
   }
@@ -260,6 +262,7 @@ export function applyMangaFrames(
   const usedSubjects = new Set<string>();
   const textUsage = new Map<MangaPanel, Map<string,number>>();
   const textGroups = new Map<string,{ box:FrameBox; items:Record<string,unknown>[]; shaped:boolean }>();
+  const panelText = new Map<number,Record<string,unknown>[]>();
   for (const raw of items) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const item = raw as Record<string,unknown>, panel=panelRefIndex(layout,item.panel);
@@ -302,7 +305,16 @@ export function applyMangaFrames(
       // content regions, not additional comic frames.
       const caption = typeof item.caption === 'string' ? item.caption.replace(/^\s*panel\s+\d+\s*[,;:]\s*/i,'') : '';
       item.caption = `Content of panel ${layout.panels.indexOf(panel)+1}: ${caption}`.trim();
+      if (item.label==='character' && crossingSubjects(panel).includes(resolvedSlot)) {
+        const frame = panel.slots.F;
+        const directions = ['top', 'left', 'bottom', 'right'].filter((_, i) => i < 2 ? box[i] < frame[i] : box[i] > frame[i]);
+        const edge = directions.length ? directions.join(' and ') : 'slanted';
+        item.caption += ` Foreground subject, not clipped to the panel frame: keep one continuous body and extend its natural silhouette across the ${edge} edge into the specified crossing region. The silhouette visibly interrupts and covers the frame line; do not draw a frame line over this foreground subject or shrink it back inside the frame.`;
+      }
       if (item.label==='text' && typeof item.text==='string' && item.text.trim() && TEXT_REGIONS[slotType(resolvedSlot)]) {
+        const panelIndex = layout.panels.indexOf(panel);
+        const ordered = panelText.get(panelIndex) ?? [];
+        ordered.push(item); panelText.set(panelIndex, ordered);
         item.caption += ` Placement: ${TEXT_REGIONS[slotType(resolvedSlot)]} text region.`;
         const key=`${layout.panels.indexOf(panel)}:${resolvedSlot}`;
         const group=textGroups.get(key) ?? {box,items:[],shaped:!!panel.shapes?.[resolvedSlot]};
@@ -318,6 +330,11 @@ export function applyMangaFrames(
     }
     delete item.slot;
     delete item.panel;
+  }
+  for (const [panelIndex, ordered] of panelText) {
+    ordered.forEach((item, index) => {
+      item.caption += ` Lettering sequence in panel ${panelIndex + 1}: ${index + 1} of ${ordered.length}; this sequence number is not visible lettering.`;
+    });
   }
   // Repeated text in one rectangular region gets separate vertical boxes in
   // utterance order. No items are invented for unused regions or silent people.
@@ -350,7 +367,7 @@ function pageFrameGuide(layout: ResolvedLayout, hasText: boolean, usedSubjects: 
   const frames = layout.panels.map((panel,index) => {
     const box = panel.slots.F ?? panel.slots.C;
     const shape = panel.shapes?.F;
-    const crossing = crossingSubjects(panel).filter(key=>usedSubjects.has(`${index}:${key}`)).map(key=>`; ${key} is a continuous foreground subject region extending across the outer border, yxyx ${JSON.stringify(panel.slots[key])}; keep its subject continuous across the crossed borders`).join('');
+    const crossing = crossingSubjects(panel).filter(key=>usedSubjects.has(`${index}:${key}`)).map(key=>`; ${key} is a continuous foreground subject region extending across the outer border, yxyx ${JSON.stringify(panel.slots[key])}; its silhouette occludes the frame line and white gutter, with the adjacent background continuing behind it; keep the body connected and the scene background inside its original frame`).join('');
     const contour = (shape ? `; clockwise corners xy ${JSON.stringify(shape)}` : '') + crossing;
     return `panel ${index+1}${box ? ` (${framePosition(box,layout.canvas)}), outer frame yxyx [${box.join(', ')}]` : ' (no outer frame specified)'}${contour}`;
   });
@@ -362,7 +379,7 @@ function pageFrameGuide(layout: ResolvedLayout, hasText: boolean, usedSubjects: 
     ...(layering.length ? [`Stacking: ${layering.join('; ')}. Front frames occlude rear frames only in their overlap; the rear scene continues behind them. Overlays and inset panels do not split the rear frame into extra panels.`] : []),
     `Reading sequence: ${layout.panels.map((_,i)=>`panel ${i+1}`).join(' then ')}; stacking does not change this sequence.`,
     'Each item belongs to its named panel; its bbox is a content region, not another comic frame. Only explicitly described border overlaps may extend outside that panel. Panel references and layout instructions are not visible lettering.',
-    ...(hasText ? ['Visible lettering follows the supplied text items and their assigned regions. Preserve each item’s exact wording and described container. Text placement can overlap secondary clothing while keeping faces, key hand gestures, contact points and important props clearly visible.'] : []),
+    ...(hasText ? ['Visible lettering follows the supplied text items and their assigned regions. Preserve each item’s exact wording and described container; do not exchange text between containers or panels. Text placement can overlap secondary clothing while keeping faces, key hand gestures, contact points and important props clearly visible.'] : []),
   ].join(' ');
 }
 

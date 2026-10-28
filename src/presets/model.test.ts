@@ -3,6 +3,13 @@ import { exportPreset, importPresets, newImagePreset, newPromptEntry, normalizeI
 import { assertPresetReady, renderPreset } from './render';
 
 describe('native image presets', () => {
+  it('roundtrips opt-in expressive composition without changing legacy presets', () => {
+    const preset = newImagePreset();
+    expect(validatePreset(preset).mangaComposition).toBe('auto');
+    preset.mangaComposition = 'expressive';
+    expect(importPresets(exportPreset(preset))[0].mangaComposition).toBe('expressive');
+    expect(() => validatePreset({ ...preset, mangaComposition: 'random' })).toThrow(/构图/);
+  });
   it('roundtrips the optional manga lettering policy without changing legacy defaults', () => {
     const preset = newImagePreset();
     expect(validatePreset(preset).mangaText).toBe('auto');

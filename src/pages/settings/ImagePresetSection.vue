@@ -22,6 +22,7 @@ import { PRESET_VARIABLES, type RenderedPreset } from '@/presets/render';
 import { builtinImagePreset, RULE_TARGETS } from '@/presets/catalog';
 import { legacyRules } from '@/presets/rules';
 import { assertMangaText, withMangaTextCorrection } from '@/presets/mangaText';
+import { assertMangaComposition } from '@/presets/mangaComposition';
 import { buildMangaSpec } from '@/manga/layouts';
 
 const config = computed(() => settings.imagePresets);
@@ -103,6 +104,7 @@ function edit(value: ImagePromptPreset): void {
   draft.value = JSON.parse(JSON.stringify(value));
   draft.value!.rules ??= legacyRules({}, {}, value.useBackendRules !== false);
   draft.value!.mangaText ??= 'auto';
+  draft.value!.mangaComposition ??= 'auto';
   variables.value = Object.entries(value.variables).map(([name, value]) => ({ name, value }));
   entryId.value = value.entries[0]?.id ?? '';
   search.value = ''; error.value = ''; notice.value = ''; preview.value = []; checkResult.value = undefined; result.value = '';
@@ -223,6 +225,7 @@ async function inspect(send: boolean): Promise<void> {
       validate: (text: string) => {
         const plan = parseImagePlan(text, prepared.segments, options.minImages, options.maxImages);
         assertMangaText(plan, chosen, !!profile.layout, mangaSnapshot, profile.lockedSize);
+        assertMangaComposition(plan, chosen, !!profile.layout, mangaSnapshot, profile.lockedSize);
       },
     };
     result.value = await withMangaTextCorrection(messages, opts.source, controller.signal, (requestMessages, source, validate) => {
@@ -332,6 +335,7 @@ async function inspect(send: boolean): Promise<void> {
         <label>输出方式<select v-model="draft.output" class="bbi-input" aria-label="预设输出方式"><option value="text">普通文本 · JSON 计划</option><option value="tool">工具输出 · 需要支持工具的副 API</option></select></label>
         <label>工作流提示词格式<select :value="draft.format ?? 'auto'" class="bbi-input" aria-label="工作流提示词格式" @change="draft.format = ($event.target as HTMLSelectElement).value as 'auto' | 'moss_layout'"><option value="auto">跟随后端与漫画开关</option><option value="moss_layout">MOSS 原生 Layout</option></select></label>
         <label id="ip-lettering" tabindex="-1">漫画文字{{ effectiveTarget.value !== 'manga' ? ' · 当前未启用漫画' : '' }}<select v-model="draft.mangaText" class="bbi-input" aria-label="漫画文字策略"><option value="auto">按剧情安排</option><option value="required">必须有叙事文字</option></select></label>
+        <label>漫画构图<select v-model="draft.mangaComposition" class="bbi-input" aria-label="漫画构图策略"><option value="auto">按剧情安排</option><option value="expressive">叙事出框</option></select></label>
         <PresetRuleEditor v-if="draft.rules" id="ip-prefix" tabindex="-1" :rule="draft.rules.jailbreak" rule-key="jailbreak" title="通用前置规则" />
         <h3 id="ip-custom-variables" tabindex="-1">自定义变量 · {{ variables.length }} 个</h3>
         <div v-for="(variable, index) in variables" :key="index" class="ip-variable">

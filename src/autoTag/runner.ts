@@ -2,6 +2,7 @@ import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { snapshotPreset } from '@/presets/model';
 import { builtinImagePreset } from '@/presets/catalog';
 import { assertMangaText, MangaTextCorrectionError, withMangaTextCorrection } from '@/presets/mangaText';
+import { assertMangaComposition } from '@/presets/mangaComposition';
 import { dshChatId, requestDshCompletion, type DshOperation } from '@/api/dsh';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
@@ -365,6 +366,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             promptOptions.maxImages,
           );
           assertMangaText(candidate, effectivePreset, !!profile.layout, mangaSnapshot, profile.lockedSize);
+          assertMangaComposition(candidate, effectivePreset, !!profile.layout, mangaSnapshot, profile.lockedSize);
           // 单槽重写忽略本次 changes,不校验建档 nl —— 校验它会为一份会被丢弃的
           // changes 白白消耗重试次数。NAI 关了自然语言时协议不要 nl,也就不验。
           if (
