@@ -2,8 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
+import BbiSelect from '@/components/BbiSelect.vue';
 import PresetRuleEditor from './PresetRuleEditor.vue';
-import PresetContentDirectory from './PresetContentDirectory.vue';
 import { previewPurpose } from './presetEditor';
 import { settings } from '@/state/settings';
 import { getContext, isAiStoryMessage } from '@/st/context';
@@ -19,7 +19,7 @@ import {
   type ImagePromptPreset,
 } from '@/presets/model';
 import { PRESET_VARIABLES, type RenderedPreset } from '@/presets/render';
-import { builtinImagePreset, BUILTIN_RULES, RULE_TARGETS } from '@/presets/catalog';
+import { builtinImagePreset, RULE_TARGETS } from '@/presets/catalog';
 import { legacyRules } from '@/presets/rules';
 import { assertMangaText, withMangaTextCorrection } from '@/presets/mangaText';
 import { buildMangaSpec } from '@/manga/layouts';
@@ -62,14 +62,6 @@ const viewRules = computed(() => displayed.value.rules ?? legacyRules({}, {}, di
 const editorTab = ref('content');
 const editorRoot = ref<HTMLFieldSetElement>();
 const editorTabs = [{ id: 'content', label: '画面要求' }, { id: 'rules', label: '规范与检查' }, { id: 'advanced', label: '输出与变量' }, { id: 'external', label: '外部附加' }];
-async function openEditor(panel: string, id = '', section = ''): Promise<void> {
-  editorTab.value = panel;
-  if (id) { search.value = ''; entryId.value = id; }
-  await nextTick();
-  const destination = editorRoot.value?.querySelector<HTMLElement>(section ? `#${section}` : `#ip-panel-${panel} h3`);
-  destination?.focus();
-  destination?.scrollIntoView({ block: 'nearest' });
-}
 function tabKey(event: KeyboardEvent, index: number): void {
   const count = editorTabs.length;
   const next = event.key === 'ArrowRight' ? (index + 1) % count : event.key === 'ArrowLeft' ? (index + count - 1) % count : event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : -1;
@@ -89,6 +81,9 @@ const entryId = ref('');
 const entry = computed(() => draft.value?.entries.find(e => e.id === entryId.value));
 const search = ref('');
 const filteredEntries = computed(() => draft.value?.entries.filter(e => `${e.name} ${e.content}`.toLowerCase().includes(search.value.toLowerCase())) ?? []);
+const entryOptions = computed(() => filteredEntries.value.map(item => ({
+  value: item.id, label: `${item.enabled ? '' : '[停用] '}${item.name}`,
+})));
 watch(filteredEntries, items => {
   if (!items.some(item => item.id === entryId.value)) entryId.value = items[0]?.id ?? '';
 });
@@ -174,9 +169,11 @@ function remove(): void {
   if (config.value.activeId === id) config.value.activeId = '';
   selected.value = config.value.activeId; removeTarget.value = undefined;
 }
-function addEntry(): void {
+async function addEntry(): Promise<void> {
   const added = newPromptEntry(); draft.value?.entries.push(added); entryId.value = added.id; search.value = '';
-  void openEditor('content', added.id);
+  editorTab.value = 'content';
+  await nextTick();
+  editorRoot.value?.querySelector<HTMLInputElement>('.ip-entry input[type="text"]')?.focus();
 }
 function move(offset: number): void {
   if (!draft.value || !entry.value) return;
@@ -286,7 +283,6 @@ async function inspect(send: boolean): Promise<void> {
     <fieldset v-if="draft" ref="editorRoot" class="ip-editor" :disabled="busy">
       <label>预设名称<input v-model="draft.name" class="bbi-input" aria-label="预设名称" /></label>
       <label>备注<input v-model="draft.description" class="bbi-input" aria-label="预设备注" /></label>
-      <PresetContentDirectory :preset="draft" :rules="viewRules" :builtin-rules="BUILTIN_RULES" :target="effectiveTarget" :variable-count="variables.length" :has-preview="!!preview.length" @navigate="openEditor" />
       <div class="ip-tabs" role="tablist" aria-label="预设编辑分类">
         <button v-for="(tab, index) in editorTabs" :id="`ip-tab-${tab.id}`" :key="tab.id" type="button" role="tab" :aria-selected="editorTab === tab.id" :aria-controls="`ip-panel-${tab.id}`" :tabindex="editorTab === tab.id ? 0 : -1" @click="editorTab = tab.id" @keydown="tabKey($event, index)">{{ tab.label }}</button>
       </div>
@@ -295,9 +291,7 @@ async function inspect(send: boolean): Promise<void> {
       <div class="ip-toolbar"><strong>提示词条目 · {{ draft.entries.filter(e => e.enabled).length }} / {{ draft.entries.length }} 已开启</strong><button class="bbi-btn bbi-btn-sm" @click="addEntry"><Icon name="plus" />添加条目</button></div>
       <p v-if="!draft.entries.length" class="ip-muted">暂无额外画面要求</p>
       <input v-if="draft.entries.length" v-model="search" class="bbi-input" type="search" placeholder="搜索条目" aria-label="搜索预设条目" />
-      <select v-if="draft.entries.length" v-model="entryId" class="bbi-input" aria-label="选择预设条目">
-        <option v-for="item in filteredEntries" :key="item.id" :value="item.id">{{ item.enabled ? '' : '[停用] ' }}{{ item.name }}</option>
-      </select>
+      <BbiSelect v-if="filteredEntries.length" v-model="entryId" class="ip-entry-picker" :options="entryOptions" wrap-labels aria-label="选择预设条目" />
       <p v-if="search && !filteredEntries.length" class="ip-muted" role="status">没有匹配的条目</p>
       <div v-if="entry" class="ip-entry">
         <div class="ip-toolbar">
@@ -398,6 +392,7 @@ async function inspect(send: boolean): Promise<void> {
 .ip-editor h3 { margin: 12px 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .ip-editor :focus-visible { outline: 2px solid var(--bbi-accent); outline-offset: 2px; }
 .ip-entry { border-block: 1px solid var(--bbi-border); padding: 8px 0; margin: 10px 0; }
+.ip-entry-picker { width: 100%; min-width: 0; margin-top: 8px; }
 .ip-section details { padding: 8px 0; min-width: 0; }
 .ip-section .ip-manage { padding: 0; position: relative; }
 .ip-manage > summary { list-style: none; }

@@ -20,6 +20,7 @@ const props = defineProps<{
   options: { value: string; label: string; icon?: string }[];
   /** 无障碍名称(行标题是纯文本 span,与控件无 label 关联,靠它补上) */
   ariaLabel?: string;
+  wrapLabels?: boolean;
 }>();
 const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>();
 
@@ -58,10 +59,9 @@ function openMenu() {
     props.options.findIndex(o => o.value === props.modelValue),
   );
   open.value = true;
-  document.addEventListener('mousedown', onDocMousedown, true);
+  document.addEventListener('pointerdown', onDocMousedown, true);
   document.addEventListener('keydown', onDocKeydown, true);
   // 菜单是视口级 fixed,不随内容滚动;滚动/缩放时直接关掉,比重算位置干净。
-  // (菜单最高 240px、选项就几个,自身几乎不会出现内部滚动,故不排除菜单内滚动。)
   document.addEventListener('scroll', closeOnViewportChange, true);
   window.addEventListener('resize', closeOnViewportChange);
 }
@@ -69,14 +69,15 @@ function openMenu() {
 function closeMenu(restoreFocus = false) {
   if (!open.value) return;
   open.value = false;
-  document.removeEventListener('mousedown', onDocMousedown, true);
+  document.removeEventListener('pointerdown', onDocMousedown, true);
   document.removeEventListener('keydown', onDocKeydown, true);
   document.removeEventListener('scroll', closeOnViewportChange, true);
   window.removeEventListener('resize', closeOnViewportChange);
   if (restoreFocus) trigger.value?.focus();
 }
 
-function closeOnViewportChange() {
+function closeOnViewportChange(event: Event) {
+  if (menu.value && event.composedPath().includes(menu.value)) return;
   closeMenu();
 }
 
@@ -114,17 +115,23 @@ function onDocKeydown(event: KeyboardEvent) {
     closeMenu(true);
   } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
+    event.stopPropagation();
+    if (!count) return;
     const delta = event.key === 'ArrowDown' ? 1 : -1;
     activeIndex.value = (activeIndex.value + delta + count) % count;
     scrollActiveIntoView();
   } else if (event.key === 'Home' || event.key === 'End') {
     event.preventDefault();
+    event.stopPropagation();
     activeIndex.value = event.key === 'Home' ? 0 : count - 1;
     scrollActiveIntoView();
   } else if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
+    event.stopPropagation();
     const option = props.options[activeIndex.value];
     if (option) pick(option);
+  } else if (event.key === 'Tab') {
+    closeMenu();
   }
 }
 
@@ -133,6 +140,7 @@ function onTriggerKeydown(event: KeyboardEvent) {
   if (open.value) return;
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
+    event.stopPropagation();
     openMenu();
   }
 }
@@ -143,7 +151,7 @@ onBeforeUnmount(() => closeMenu());
 <template>
   <!-- 根类名不能叫 bbi-select:base.css 里那个类是给美化原生 <select> 用的,
        带背景图三角 + padding-right,撞上会在触发器右边多画一个三角 -->
-  <div class="bbi-select-box">
+  <div class="bbi-select-box" :class="{ 'wrap-labels': wrapLabels }">
     <button
       ref="trigger"
       class="bbi-select-trigger"
@@ -162,7 +170,7 @@ onBeforeUnmount(() => closeMenu());
     </button>
 
     <Teleport :to="modalHost" :disabled="!modalHost">
-      <ul v-if="open" ref="menu" class="bbi-select-menu" role="listbox" :style="menuStyle">
+      <ul v-if="open" ref="menu" class="bbi-select-menu" :class="{ 'wrap-labels': wrapLabels }" role="listbox" :aria-label="ariaLabel" :style="menuStyle">
         <li
           v-for="(option, i) in options"
           :key="option.value"
@@ -240,6 +248,7 @@ onBeforeUnmount(() => closeMenu());
 
 /* 菜单 Teleport 到 modalHost(scoped 样式在同 shadow root 内照常生效) */
 .bbi-select-menu {
+  box-sizing: border-box;
   position: fixed;
   /* 10003:高于普通弹窗遮罩(10001)与叠加层遮罩(10002)。
      本组件现在也用在弹窗内部(渠道弹窗的「思考强度」),菜单与遮罩会同时存在;
@@ -250,6 +259,7 @@ onBeforeUnmount(() => closeMenu());
   padding: 4px;
   list-style: none;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bbi-surface);
   border: 1px solid var(--bbi-line);
   border-radius: var(--bbi-radius);
@@ -282,5 +292,15 @@ onBeforeUnmount(() => closeMenu());
 .bbi-select-check {
   flex: none;
   color: var(--bbi-accent);
+}
+.wrap-labels .bbi-select-label,
+.wrap-labels .bbi-select-option-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.wrap-labels .bbi-select-option {
+  min-height: 40px;
+  box-sizing: border-box;
 }
 </style>

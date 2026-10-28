@@ -46,6 +46,28 @@ afterEach(() => {
 });
 
 describe('preset section initial setup', () => {
+  it('edits entries with the themed picker without a duplicate content directory', async () => {
+    const preset = newImagePreset();
+    preset.entries[0].name = 'A named creative entry';
+    settings.imagePresets = { activeId: preset.id, presets: [preset], directChannels: [] };
+    const originalSetup = ImagePresetSection.setup!;
+    const component = {
+      ...ImagePresetSection,
+      setup(props: Parameters<typeof originalSetup>[0], context: Parameters<typeof originalSetup>[1]) {
+        const state = originalSetup(props, context) as Record<string, any>;
+        state.edit(preset);
+        return state;
+      },
+    };
+    const html = await renderToString(createSSRApp(component));
+    expect(html).not.toContain('内容目录');
+    expect(html).toContain('bbi-select-trigger');
+    expect(html).toContain('aria-label="选择预设条目"');
+    expect(html).toContain('A named creative entry');
+    expect(html).toContain('规范与检查');
+    expect(html).toContain('输出与变量');
+  });
+
   it('runs the real client setup before a draft exists', () => {
     settings.imagePresets = { activeId: '', presets: [], directChannels: [] };
     settings.defaultBackend = 'runninghub';
