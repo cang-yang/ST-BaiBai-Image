@@ -42,7 +42,8 @@ export const IMAGE_PLAN_TOOLS = [{
   },
 }];
 
-export const IMAGE_PLAN_TOOL_CHOICE = { type: 'function', function: { name: IMAGE_PLAN_TOOL_NAME } };
+// Thinking endpoints may reject forced/named choices; validate the single allowed call on return.
+export const IMAGE_PLAN_TOOL_CHOICE = 'auto';
 
 export function imagePlanArguments(calls: unknown): string {
   if (!Array.isArray(calls) || calls.length !== 1) throw new Error('工具输出必须且只能包含一个配图计划');

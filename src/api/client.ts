@@ -51,6 +51,17 @@ export class ApiError extends Error {
   }
 }
 
+function upstreamError(message: string, status?: number): ApiError {
+  let hint = '';
+  if (/PROXY_GENERATION_DISABLED/i.test(message) || (/AI Studio/i.test(message) && /build/i.test(message) && /Playground/i.test(message))) {
+    hint = '上游代理的模型通道不兼容（Build/Playground），不是配图预设或生图工作流错误。请在代理端检查该模型的路由和参数支持，或联系代理服务商。';
+  } else if (/Thinking mode does not support this tool_choice/i.test(message)) {
+    hint = '服务商不接受思考模式下的当前工具选择参数。请确认插件已更新；仍失败时可改用支持工具调用的渠道，或在配图预设中选择普通文本。';
+  }
+  const prefix = status === undefined ? '副 API 返回错误' : `副 API 请求失败 (${status})`;
+  return new ApiError(`${prefix}: ${hint ? `${hint}\n上游原始错误：` : ''}${message.slice(0, 300)}`, status);
+}
+
 /**
  * 规范化 OpenAI 兼容 base url:
  * - 用户填完整 /chat/completions 时只去掉端点后缀;
@@ -337,7 +348,7 @@ async function requestCompletionAtUrl(
 
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
-        throw new ApiError(`副 API 请求失败 (${resp.status}): ${text.slice(0, 300)}`, resp.status);
+        throw upstreamError(text, resp.status);
       }
 
       // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
@@ -351,7 +362,7 @@ async function requestCompletionAtUrl(
 
       const data = await resp.json();
       if (data?.error) {
-        throw new ApiError(data.error.message || '副 API 返回错误');
+        throw upstreamError(data.error.message || '副 API 返回错误');
       }
 
       opts.onDshResponse?.(data);
@@ -422,7 +433,7 @@ export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 
       if (opts.imagePlanTool) throw new ApiError('工具流包含损坏的数据片段');
       return;
     }
-    if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
+    if (json?.error) throw upstreamError(json.error.message || '副 API 返回错误');
     const choice = json?.choices?.[0];
     if (['length', 'content_filter'].includes(choice?.finish_reason)) throw new ApiError(`副 API 输出未完成 (${choice.finish_reason})`);
     if (choice?.finish_reason) terminated = true;

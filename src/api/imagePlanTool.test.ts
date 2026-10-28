@@ -34,7 +34,7 @@ describe('controlled tool output', () => {
     const include = JSON.parse(body.custom_include_body as string);
     expect(body.chat_completion_source).toBe('custom');
     expect(include.tools).toHaveLength(1);
-    expect(include.tool_choice.function.name).toBe(IMAGE_PLAN_TOOL_NAME);
+    expect(include.tool_choice).toBe('auto');
     expect(body.tool_choice).toEqual(include.tool_choice);
     expect(include.parallel_tool_calls).toBe(false);
     expect(() => buildRequestBody({ ...channel, excludeParams: ['tools'] }, messages, channel.url, false, undefined, true)).toThrow();
