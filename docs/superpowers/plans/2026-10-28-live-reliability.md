@@ -40,18 +40,26 @@ Worldbook import, keyword hit/miss and disabled-entry filtering passed in the re
 
 ## 3. Workflow and Images
 
-- [ ] Recover the previously authorized RunningHub credential from existing local session/configuration without displaying it.
+- [x] Configure the authorized RunningHub credential without displaying it.
 - [x] Import the existing no-LoRA MOSS-SFT workflow and verify model, dimensions and prompt mapping.
-- [ ] Run an actual story-to-plan-to-image path from SillyTavern.
-- [ ] Inspect the produced image for framing, detail, dialogue and character consistency.
-- [ ] Adjust only observed quality problems; retain originals for comparison.
-- [ ] Repeat the completed path to distinguish a one-off success from a repeatable result.
+- [x] Run an actual story-to-plan-to-image path from SillyTavern.
+- [x] Inspect the produced image for framing, detail, dialogue and character consistency.
+- [x] Adjust only observed quality problems; retain originals for comparison.
+- [x] Repeat the completed path to distinguish a one-off success from a repeatable result.
 
-Credential unavailable in this installation and existing delivery files; user was asked to enter it locally. No new image has been generated. Three actual model-generated plans compiled successfully to 1664x2496 bounding boxes, but that does not establish visual quality.
+User supplied the credential on continuation; connection validation succeeded. Three real plugin image tasks completed:
+
+- Baseline card task 2115368724764909569, 21 RH: coherent dialogue and identity, but flat regular horizontal panels without breakout.
+- Fresh main-story to automatic plan to image task 2115371567093735425, 24 RH: two upper panels and one lower main panel; visible hair overlap across the gutter; readable Chinese dialogue and improved hair, fabric and station reflections.
+- Consecutive fresh automatic task 2115372580626321409, 23 RH: repeated readable dialogue and breakout, returned to the actual chat card.
+
+All use the same no-LoRA MOSS SFT workflow. Refined preset adds concrete style direction based on the author's light/material guidance, and layout selection prefers the saved crossing subject region for suitable single-protagonist scenes. These are illustrative integration runs with different scenes, not a controlled quality benchmark. Remaining imperfections include minor action interpretation and stochastic anatomy/style variation. Mobile 390px viewport loaded the 1664x2496 image at 268px width without overflow.
 
 ## 4. Delivery
 
 - [x] Run focused tests, full tests, typecheck and production build.
 - [x] Review changes and redact all delivery artifacts.
-- [ ] Deploy the verified bundle to the local installation and push the fix to the fork.
-- [ ] Leave the local server accessible and document tested paths, images and any unverified limits.
+- [x] Deploy the verified bundle to the local installation and push the fix to the fork.
+- [x] Leave the local server accessible and document tested paths, images and any unverified limits.
+
+Delivery evidence is in the workspace's `outputs/live-validation/`: baseline and two refined images, exported original/refined presets, credential-free manga settings, desktop/mobile screenshots and README. Fresh final verification: 80 test files passed, 1095 tests passed, 3 existing skips; typecheck and build passed. Local installed bundle hash matches the published source build. Multiple real keys were not available for paid concurrency testing; browser direct transport failed in this environment, so the working configuration uses SillyTavern proxy with streaming.
