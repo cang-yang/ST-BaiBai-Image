@@ -1,5 +1,7 @@
 import { parseWorkflowTemplate, type ComfyWorkflow, type ComfyTemplateValues } from './comfyui';
-import { newRunningHubPreset, type RunningHubPreset } from './runninghubConfig';
+import { newRunningHubPreset, normalizeRunningHubMangaBundle, type RunningHubPreset } from './runninghubConfig';
+import { parseSize } from './size';
+import { applyMangaFrames, parseCustomLayout, resizeMangaCanvases, type MangaSettings } from '@/manga/layouts';
 
 export interface NodeOverride { nodeId: string; fieldName: string; fieldValue: string | number | boolean }
 export interface WorkflowField {
@@ -101,6 +103,7 @@ export function importRunningHubWorkflow(text: string, fallbackName = '导入工
   const raw: unknown = JSON.parse(text.replace(/^\uFEFF/, ''));
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('工作流文件必须是 JSON 对象');
   const wrapper = raw as Record<string, unknown>;
+  if (wrapper.entries && !wrapper.workflow) throw new Error('这是酒馆世界书，请在世界书界面导入，不是 RunningHub 工作流');
   const preset = newRunningHubPreset(typeof wrapper.name === 'string' ? wrapper.name : fallbackName);
   const data = wrapper.workflow ?? raw;
   const workflow = typeof data === 'string' ? data : JSON.stringify(data);
@@ -118,6 +121,14 @@ export function importRunningHubWorkflow(text: string, fallbackName = '导入工
       if (typeof o[key] === 'string') preset[key] = o[key];
     }
     preset.naturalLanguage = o.naturalLanguage === true;
+    preset.manga = o.manga === true;
+    preset.mangaPositive = typeof o.mangaPositive === 'string' ? o.mangaPositive : '';
+    preset.mangaBundle = normalizeRunningHubMangaBundle(o.mangaBundle);
+    if (preset.mangaBundle) {
+      const source = o.mangaBundle as Record<string, unknown>;
+      if (source.custom !== undefined && !Array.isArray(source.custom)) throw new Error('漫画版式必须为数组');
+      preset.mangaBundle.custom = (source.custom as unknown[] ?? []).map(item => parseCustomLayout(JSON.stringify(item)));
+    }
     preset.orientationLock = o.orientationLock === 'portrait' || o.orientationLock === 'landscape' ? o.orientationLock : 'auto';
   }
   return preset;
@@ -125,11 +136,43 @@ export function importRunningHubWorkflow(text: string, fallbackName = '导入工
 
 export function exportRunningHubWorkflow(preset: RunningHubPreset): string {
   parseWorkflowTemplate(preset.workflow);
-  const { portraitSize, landscapeSize, naturalLanguage, orientationLock, outputNodeId } = preset;
+  const { portraitSize, landscapeSize, naturalLanguage, orientationLock, outputNodeId, manga, mangaPositive, mangaBundle } = preset;
   return JSON.stringify({
     name: preset.name, workflowId: workflowIdFromText(preset.workflowId), workflow: preset.workflow,
-    baibai: { portraitSize, landscapeSize, naturalLanguage, orientationLock, outputNodeId },
+    baibai: { portraitSize, landscapeSize, naturalLanguage, orientationLock, outputNodeId, manga, mangaPositive, mangaBundle },
   }, null, 2);
+}
+
+export function runningHubMangaSettings(preset: RunningHubPreset, current: MangaSettings): MangaSettings {
+  const portrait = parseSize(preset.portraitSize), landscape = parseSize(preset.landscapeSize);
+  if (!portrait || !landscape || portrait.width > portrait.height
+    || portrait.width !== landscape.height || portrait.height !== landscape.width) {
+    throw new Error('漫画工作流的横竖尺寸须互为宽高交换，例如 1664x2496 / 2496x1664');
+  }
+  const bundle = preset.mangaBundle;
+  const merged = new Map(current.custom.map(layout => [layout.id, layout]));
+  for (const layout of bundle?.custom ?? []) merged.set(layout.id, parseCustomLayout(JSON.stringify(layout)));
+  const input = { ...current, custom: [...merged.values()] };
+  const custom = resizeMangaCanvases(input, portrait.width, portrait.height);
+  return { ...current, enabled: true, custom,
+    ...(bundle ? { spec: bundle.spec, thinking: bundle.thinking, selectionNotes: bundle.selectionNotes } : {}),
+  };
+}
+
+export function prepareRunningHubPrompt(prompt: string, preset: RunningHubPreset, manga: MangaSettings, size: { width?: number; height?: number } | null): string {
+  if (preset.manga && !manga.enabled) throw new Error('此工作流需要漫画模式，请先应用漫画配置');
+  const compiled = applyMangaFrames(prompt, manga, size);
+  const fixed = preset.mangaPositive?.trim();
+  if (!fixed) return compiled;
+  let layout: Record<string, unknown>;
+  try { layout = JSON.parse(compiled); } catch { throw new Error('漫画固定正面词需要有效的 Layout JSON'); }
+  if (!layout || typeof layout !== 'object' || Array.isArray(layout)
+    || !layout.summary || typeof layout.summary !== 'object' || Array.isArray(layout.summary)) {
+    throw new Error('漫画固定正面词需要 summary 对象');
+  }
+  const summary = layout.summary as Record<string, unknown>;
+  summary.caption = `${fixed}\n${typeof summary.caption === 'string' ? summary.caption : ''}`;
+  return JSON.stringify(layout);
 }
 
 export function outputNodeOptions(template: string): { value: string; label: string }[] {

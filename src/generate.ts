@@ -32,8 +32,9 @@ import type { GenerationMeta } from '@/generationMeta';
 import { activeComfyPreset, activeNaiEndpoint, activeOrientationLock, effectiveComfyConn, effectiveNai, settings, type BackendId } from '@/state/settings';
 import { applyMangaFrames } from '@/manga/layouts';
 import { generateRunningHubImage } from '@/backends/runninghub';
-import { validateRunningHubWorkflow } from '@/backends/runninghubWorkflow';
+import { prepareRunningHubPrompt, validateRunningHubWorkflow } from '@/backends/runninghubWorkflow';
 import { activeRunningHubPreset } from '@/state/settings';
+import { enabledRunningHubKeys } from '@/backends/runninghubConfig';
 
 /** 一次生成的输入。与协议层 ImageInsertion 同形,但不含正文位置信息。 */
 export interface GenerateInput {
@@ -109,7 +110,7 @@ export function backendStatus(): BackendStatus {
 
   if (backend === 'runninghub') {
     const preset = activeRunningHubPreset();
-    const reason = !settings.runninghub.apiKey.trim() ? '未填写 RunningHub API Key' : validateRunningHubWorkflow(preset);
+    const reason = !enabledRunningHubKeys(settings.runninghub).length ? '未填写 RunningHub API Key' : validateRunningHubWorkflow(preset);
     return { backend, configured: !reason, model: preset.name, supportsCharacters: false, reason };
   }
 
@@ -222,7 +223,7 @@ export async function generateImage(
       const config = { ...settings.runninghub };
       const preset = { ...activeRunningHubPreset() };
       const px = parseSize(pickSize(preset, size));
-      const prompt = applyMangaFrames(input.prompt, settings.manga, px);
+      const prompt = prepareRunningHubPrompt(input.prompt, preset, settings.manga, px);
       const output = await generateRunningHubImage(
         config, preset,
         { prompt, nl: prompt !== input.prompt ? '' : input.nl ?? '', negative_prompt: input.negative ?? '',

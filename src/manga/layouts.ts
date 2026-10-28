@@ -460,8 +460,8 @@ export function buildMangaSpec(manga: MangaSettings): string {
   for (const orientation of ['portrait', 'landscape'] as MangaOrientation[]) {
     const layouts = resolveLayouts(manga, orientation);
     if (!layouts.length) continue;
-    const canvas = canvasOf(orientation);
-    lines.push(`${orientation}(${canvas.width}×${canvas.height}):`);
+    const canvases = [...new Set(layouts.map(layout => `${layout.canvas.width}×${layout.canvas.height}`))];
+    lines.push(`${orientation}(${canvases.join(', ')}):`);
     for (const layout of layouts) {
       const parts = [layout.id, `${layout.panels.length} 格`, `画布 ${layout.canvas.width}×${layout.canvas.height}`];
       if (layout.usage) parts.push(layout.usage);

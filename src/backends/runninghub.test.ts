@@ -3,7 +3,7 @@ import {
   generateRunningHubImage, recoverRunningHubImage, runningHubTasks,
   selectRunningHubImage, testRunningHubConnection, uploadRunningHubImage,
 } from './runninghub';
-import { runningHubDefaults } from './runninghubConfig';
+import { newRunningHubKey, runningHubDefaults } from './runninghubConfig';
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 const success = () => json({
@@ -37,6 +37,79 @@ afterEach(() => {
 });
 
 describe('RunningHub image transport', () => {
+  it('reads the v2 usage envelope returned by a real image task', async () => {
+    const { config, preset } = ready();
+    fetchMock.mockResolvedValueOnce(json({ taskId: 'usage-task' }))
+      .mockResolvedValueOnce(json({
+        status: 'SUCCESS',
+        usage: { consumeMoney: null, consumeCoins: '95', taskCostTime: '236' },
+        results: [{ url: 'https://cdn.example/image.png', outputType: 'png', nodeId: '18' }],
+      })).mockResolvedValueOnce(image());
+    const output = await generateRunningHubImage(config, preset, values);
+    expect(output).toMatchObject({ coins: 95, seconds: 236 });
+    expect(runningHubTasks.find(task => task.taskId === 'usage-task')).toMatchObject({ coins: 95, seconds: 236 });
+  });
+  it('uses a workflow-bound key and refuses a disabled binding before billing', async () => {
+    const { config, preset } = ready();
+    config.apiKeys = [newRunningHubKey('A', 'a'), newRunningHubKey('B', 'b')];
+    preset.keyId = config.apiKeys[1].id;
+    fetchMock.mockResolvedValueOnce(json({ taskId: 'bound' })).mockResolvedValueOnce(success()).mockResolvedValueOnce(image());
+    await generateRunningHubImage(config, preset, values);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer b');
+    config.apiKeys[1].enabled = false;
+    fetchMock.mockClear();
+    await expect(generateRunningHubImage(config, preset, values)).rejects.toThrow('停用');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('recovers with the original key and site after changing the active connection', async () => {
+    const { config, preset } = ready();
+    config.apiKeys = [newRunningHubKey('A', 'a'), newRunningHubKey('B', 'b')];
+    preset.keyId = config.apiKeys[0].id;
+    fetchMock.mockResolvedValueOnce(json({ taskId: 'original' })).mockResolvedValueOnce(success()).mockResolvedValueOnce(image());
+    await generateRunningHubImage(config, preset, values);
+    config.activeKeyId = config.apiKeys[1].id;
+    config.url = 'https://www.runninghub.cn';
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce(success()).mockResolvedValueOnce(image());
+    await recoverRunningHubImage(config, 'original');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://www.runninghub.ai/openapi/v2/query');
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer a');
+    config.apiKeys.shift();
+    fetchMock.mockClear();
+    await expect(recoverRunningHubImage(config, 'original')).rejects.toThrow('已删除');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('runs tasks on different keys, pins polling/cancellation, and never leaks secrets to records', async () => {
+    const { config, preset } = ready();
+    config.apiKeys = [newRunningHubKey('A', config.apiKey + 'A'), newRunningHubKey('B', config.apiKey + 'B')];
+    const controller = new AbortController();
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementation((url: string, init: RequestInit) => {
+      const key = (init.headers as Record<string, string>).Authorization;
+      if (url.includes('/run/workflow/')) {
+        if (key.endsWith('A')) return new Promise(resolve => { finish = resolve; });
+        return Promise.resolve(json({ taskId: 'second-key' }));
+      }
+      if (url.includes('/query')) return Promise.resolve(json({ status: 'RUNNING' }));
+      return Promise.resolve(json({ code: 0 }));
+    });
+    const first = generateRunningHubImage(config, preset, values, controller.signal);
+    const secondController = new AbortController();
+    const second = generateRunningHubImage(config, preset, values, secondController.signal);
+    const firstAssertion = expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    const secondAssertion = expect(second).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock.mock.calls.filter(c => c[0].includes('/run/workflow/'))).toHaveLength(2);
+    secondController.abort();
+    await secondAssertion;
+    const cancel = fetchMock.mock.calls.find(c => c[0].includes('/cancel'));
+    expect(cancel?.[1].headers.Authorization).toBe(`Bearer ${config.apiKeys[1].key}`);
+    expect(JSON.parse(cancel?.[1].body).taskId).toBe('second-key');
+    controller.abort();
+    finish(json({ taskId: 'first-key' }));
+    await firstAssertion;
+    expect(JSON.stringify(runningHubTasks)).not.toContain(config.apiKey);
+  });
   it('uses v2 Bearer auth and never leaks the key to image hosts or task records', async () => {
     const { config, preset } = ready();
     fetchMock.mockResolvedValueOnce(json({ taskId: 'task-1' })).mockResolvedValueOnce(success()).mockResolvedValueOnce(image());

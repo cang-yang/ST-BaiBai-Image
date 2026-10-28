@@ -4,10 +4,10 @@ import Icon from '@/components/Icon.vue';
 import BbiSelect from '@/components/BbiSelect.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import { activeRunningHubPreset, ORIENTATION_LOCKS, settings } from '@/state/settings';
-import { newRunningHubPreset, RUNNINGHUB_SITES } from '@/backends/runninghubConfig';
+import { newRunningHubPreset, newRunningHubKey, configuredRunningHubKeys, enabledRunningHubKeys, selectedRunningHubKey, RUNNINGHUB_SITES, type RunningHubKey } from '@/backends/runninghubConfig';
 import {
   exportRunningHubWorkflow, importRunningHubWorkflow, outputNodeOptions, runningHubFields,
-  setRunningHubField, validateRunningHubWorkflow, workflowIdFromText, type WorkflowField,
+  setRunningHubField, validateRunningHubWorkflow, workflowIdFromText, runningHubMangaSettings, prepareRunningHubPrompt, type WorkflowField,
 } from '@/backends/runninghubWorkflow';
 import {
   generateRunningHubImage, recoverRunningHubImage, runningHubTasks, testRunningHubConnection, uploadRunningHubImage,
@@ -31,13 +31,30 @@ const invalid = computed(() => validateRunningHubWorkflow(active.value));
 const fields = computed(() => {
   try { return runningHubFields(active.value.workflow); } catch { return []; }
 });
+const fieldError = computed(() => {
+  if (!active.value.workflow.trim()) return '尚未导入工作流';
+  try {
+    return runningHubFields(active.value.workflow).length ? '' : '此工作流没有可编辑的标量输入参数';
+  } catch (e) { return message(e); }
+});
+const nodesOpen = ref(false);
+if (!config.value.apiKeys.length) {
+  config.value.apiKeys = configuredRunningHubKeys(config.value).map(key => ({ ...key, id: newRunningHubKey().id }));
+  if (!config.value.apiKeys.length) config.value.apiKeys.push(newRunningHubKey('Key 1'));
+  config.value.activeKeyId = config.value.apiKeys[0].id;
+}
+config.value.apiKey = '';
+const hasKeys = computed(() => enabledRunningHubKeys(config.value).length > 0);
+const selectedKey = computed(() => selectedRunningHubKey(config.value));
+const keyOptions = computed(() => config.value.apiKeys.map(key => ({ value: key.id, label: key.name || '未命名 Key' })));
+const keyStatus = ref<Record<string, string>>({});
 const outputOptions = computed(() => [{ value: '', label: '第一张图片' }, ...outputNodeOptions(active.value.workflow)]);
 const sites = [...RUNNINGHUB_SITES];
 const removeOpen = ref(false);
+const mangaOpen = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const paste = ref('');
 const error = ref('');
-const connection = ref('');
 const testing = ref(false);
 const uploading = ref(false);
 const showKey = ref(false);
@@ -92,7 +109,17 @@ function importText(text: string, name?: string) {
     activeId.value = p.id;
     error.value = '';
     paste.value = '';
+    if (p.manga) mangaOpen.value = true;
   } catch (e) { error.value = message(e); }
+}
+function applyManga() {
+  try {
+    settings.manga = runningHubMangaSettings(active.value, settings.manga);
+    active.value.manga = true;
+    active.value.naturalLanguage = false;
+    error.value = '';
+    mangaOpen.value = false;
+  } catch (e) { error.value = message(e); mangaOpen.value = false; }
 }
 async function importFile(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -127,13 +154,32 @@ function bind(field: WorkflowField, event: Event) {
   if (input.value) active.value.workflow = setRunningHubField(active.value.workflow, field.nodeId, field.fieldName, input.value);
   input.value = '';
 }
-async function testConnection() {
+function addKey() {
+  const key = newRunningHubKey(`Key ${config.value.apiKeys.length + 1}`);
+  config.value.apiKeys.push(key);
+  config.value.activeKeyId = key.id;
+}
+function removeKey(id: string) {
+  config.value.apiKeys = config.value.apiKeys.filter(key => key.id !== id);
+  if (!config.value.apiKeys.length) config.value.apiKeys.push(newRunningHubKey('Key 1'));
+  if (config.value.activeKeyId === id) config.value.activeKeyId = config.value.apiKeys[0].id;
+}
+async function testConnection(key?: RunningHubKey) {
   if (testing.value) return;
   testing.value = true;
-  connection.value = '';
   testController = new AbortController();
-  try { connection.value = await testRunningHubConnection({ ...config.value }, testController.signal); }
-  catch (e) { connection.value = message(e); }
+  const targets = key ? [{ ...key }] : config.value.apiKeys.filter(item => item.key.trim()).map(item => ({ ...item }));
+  try {
+    for (const target of targets) {
+      keyStatus.value[target.id] = '连接中…';
+      try {
+        keyStatus.value[target.id] = await testRunningHubConnection({
+          ...config.value, apiKeys: [target], activeKeyId: target.id,
+        }, testController.signal);
+      } catch (e) { keyStatus.value[target.id] = message(e); }
+      if (testController.signal.aborted) break;
+    }
+  }
   finally { testing.value = false; }
 }
 async function uploadReference(field: WorkflowField, event: Event) {
@@ -143,9 +189,11 @@ async function uploadReference(field: WorkflowField, event: Event) {
   uploading.value = true;
   uploadController = new AbortController();
   const target = active.value;
+  const account = selectedKey.value;
   try {
     const filename = await uploadRunningHubImage({ ...config.value }, file, uploadController.signal);
     target.workflow = setRunningHubField(target.workflow, field.nodeId, field.fieldName, filename);
+    target.keyId = account?.id;
     error.value = '';
   } catch (e) { error.value = message(e); }
   finally { uploading.value = false; input.value = ''; }
@@ -171,8 +219,9 @@ async function run(recover = false) {
     } else {
       const size = p.orientationLock === 'auto' ? orientation.value : p.orientationLock;
       const px = parseSize(size === 'portrait' ? p.portraitSize : p.landscapeSize);
+      const compiled = prepareRunningHubPrompt(text, p, settings.manga, px);
       setPreview(await generateRunningHubImage({ ...config.value }, p, {
-        prompt: text, nl: nl.value, negative_prompt: negative.value, seed: usedSeed, width: px?.width, height: px?.height,
+        prompt: compiled, nl: compiled !== text ? '' : nl.value, negative_prompt: negative.value, seed: usedSeed, width: px?.width, height: px?.height,
       }, controller.signal, { onPhase: value => { phase.value = value; }, onTask: id => { recoverId.value = id; } }));
     }
     previewPrompt.value = recover ? `RunningHub task ${recoverId.value.trim()}` : text;
@@ -215,14 +264,28 @@ onBeforeUnmount(() => {
     <section class="rh-section">
       <h4>连接</h4>
       <div class="rh-field"><span>站点</span><BbiSelect v-model="config.url" :options="sites" aria-label="RunningHub 站点" /></div>
-      <label class="rh-field">
-        <span>API Key</span>
-        <span class="rh-inline">
-          <input v-model="config.apiKey" :type="showKey ? 'text' : 'password'" class="bbi-input" autocomplete="off" spellcheck="false" aria-label="RunningHub API Key" />
+      <div class="rh-bar">
+        <h4>API Keys</h4>
+        <div class="rh-tools">
+          <button class="bbi-icon-btn" type="button" title="添加 Key" aria-label="添加 Key" @click="addKey"><Icon name="plus" /></button>
           <button class="bbi-icon-btn" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏密钥" @click="showKey = !showKey"><Icon name="eye" /></button>
-        </span>
-      </label>
-      <div class="rh-bar"><button class="bbi-btn" :disabled="testing || !config.apiKey.trim()" @click="testConnection"><Icon name="backend" />{{ testing ? '连接中…' : '测试连接' }}</button><span role="status">{{ connection }}</span></div>
+        </div>
+      </div>
+      <div v-for="key in config.apiKeys" :key="key.id" class="rh-key">
+        <div class="rh-bar">
+          <input v-model="key.name" class="bbi-input rh-key-name" aria-label="Key 名称" />
+          <label class="rh-key-enable"><input v-model="key.enabled" type="checkbox" class="bbi-checkbox" :aria-label="`启用 ${key.name}`" />启用</label>
+          <button class="bbi-icon-btn" type="button" :title="`删除 ${key.name}`" :aria-label="`删除 ${key.name}`" @click="removeKey(key.id)"><Icon name="trash" /></button>
+        </div>
+        <input v-model="key.key" :type="showKey ? 'text' : 'password'" class="bbi-input" autocomplete="off" spellcheck="false" :aria-label="`RunningHub API Key ${key.name}`" />
+        <div class="rh-bar">
+          <label class="rh-key-limit">并发上限<input v-model.number="key.concurrency" type="number" min="1" max="5" class="bbi-input" :aria-label="`${key.name} 并发上限`" /></label>
+          <button class="bbi-btn" :disabled="testing || !key.key.trim()" @click="testConnection(key)"><Icon name="backend" />测试连接</button>
+        </div>
+        <span v-if="keyStatus[key.id]" role="status">{{ keyStatus[key.id] }}</span>
+      </div>
+      <div class="rh-bar"><button class="bbi-btn" :disabled="testing || !config.apiKeys.some(key => key.key.trim())" @click="testConnection()"><Icon name="backend" />{{ testing ? '连接中…' : '测试全部 Key' }}</button><span>可用 Key：{{ enabledRunningHubKeys(config).length }}</span></div>
+      <div class="rh-field"><span>上传 / 恢复任务 Key</span><BbiSelect v-model="config.activeKeyId" :options="keyOptions" aria-label="上传与恢复任务 Key" /></div>
     </section>
     <section class="rh-section">
       <div class="rh-bar">
@@ -239,11 +302,14 @@ onBeforeUnmount(() => {
       <BbiSelect v-model="activeId" :options="presets" aria-label="当前 RunningHub 工作流" />
       <label class="rh-field"><span>名称</span><input v-model="active.name" class="bbi-input" /></label>
       <label class="rh-field"><span>工作流 ID / 链接</span><input v-model="active.workflowId" class="bbi-input" spellcheck="false" @blur="active.workflowId = workflowIdFromText(active.workflowId) || active.workflowId" /></label>
+      <div class="rh-field"><span>生成 Key</span><BbiSelect :model-value="active.keyId || ''" :options="[{ value: '', label: '自动分配（所有已启用 Key）' }, ...keyOptions]" aria-label="工作流生成 Key" @update:model-value="active.keyId = $event" /></div>
       <div class="rh-sizes">
         <label>竖屏尺寸<input v-model="active.portraitSize" class="bbi-input" placeholder="768x1024" /></label>
         <label>横屏尺寸<input v-model="active.landscapeSize" class="bbi-input" placeholder="1024x768" /></label>
       </div>
       <div class="rh-field"><span>画幅方向</span><BbiSelect v-model="active.orientationLock" :options="ORIENTATION_LOCKS" aria-label="画幅方向" /></div>
+      <div class="rh-bar"><button class="bbi-btn" @click="mangaOpen = true"><Icon name="check" />应用漫画配置</button><span v-if="settings.manga.enabled">漫画模式已启用</span></div>
+      <label v-if="active.manga">漫画固定正面词<textarea v-model="active.mangaPositive" class="bbi-input" rows="3" aria-label="漫画固定正面词"></textarea></label>
       <label class="bbi-switch-row"><span>生成自然语言</span><input v-model="active.naturalLanguage" type="checkbox" class="bbi-checkbox" /></label>
       <div class="rh-field"><span>输出节点</span><BbiSelect v-model="active.outputNodeId" :options="outputOptions" aria-label="输出图片节点" /></div>
       <p v-if="invalid" class="rh-warning" role="status">{{ invalid }}</p>
@@ -252,7 +318,10 @@ onBeforeUnmount(() => {
         <textarea v-model="paste" class="bbi-input rh-code" rows="5" aria-label="待导入的工作流 JSON" spellcheck="false"></textarea>
         <button class="bbi-btn" :disabled="!paste.trim()" @click="importText(paste)"><Icon name="upload" />导入为新工作流</button>
       </details>
-      <details><summary>节点参数</summary>
+      <div class="rh-node-editor">
+        <button class="rh-disclosure" type="button" :aria-expanded="nodesOpen" aria-controls="rh-node-fields" @click.stop="nodesOpen = !nodesOpen"><span>节点参数 · {{ fields.length }}</span><Icon name="chevron" :class="{ 'rh-open': nodesOpen }" /></button>
+        <div v-if="nodesOpen" id="rh-node-fields">
+        <p v-if="fieldError" class="rh-warning" role="status">{{ fieldError }}</p>
         <div v-for="field in fields" :key="`${active.id}/${field.nodeId}/${field.fieldName}`" class="rh-node">
           <label :for="`rh-${field.nodeId}-${field.fieldName}`">{{ field.nodeId }} · {{ field.title }} · {{ field.fieldName }}</label>
           <div class="rh-node-controls">
@@ -265,15 +334,15 @@ onBeforeUnmount(() => {
           </div>
           <label v-if="field.fieldName === 'image'" class="rh-reference">
             <span>{{ uploading ? '上传中…' : '上传参考图' }}</span>
-            <input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading || !config.apiKey.trim()" :aria-label="`${field.nodeId} 上传参考图`" @change="uploadReference(field, $event)" />
+            <input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading || !selectedKey?.key" :aria-label="`${field.nodeId} 上传参考图`" @change="uploadReference(field, $event)" />
           </label>
         </div>
-      </details>
+        </div>
+      </div>
       <details><summary>工作流 JSON</summary><textarea v-model="active.workflow" class="bbi-input rh-code" rows="12" spellcheck="false" aria-label="RunningHub 工作流 JSON"></textarea></details>
     </section>
     <section class="rh-section">
       <details><summary>执行设置</summary>
-        <label class="rh-field"><span>本地并发上限</span><input v-model.number="config.concurrency" type="number" min="1" max="5" class="bbi-input" /></label>
         <label class="rh-field"><span>等待超时（分钟）</span><input v-model.number="config.timeoutMinutes" type="number" min="1" max="60" class="bbi-input" /></label>
         <label class="rh-field"><span>实例</span><select v-model="config.instanceType" class="bbi-input"><option value="default">默认</option><option value="plus">Plus（额外计费）</option></select></label>
         <label class="rh-field"><span>保留实例（秒，0 关闭）</span><input v-model.number="config.retainSeconds" type="number" min="0" max="180" class="bbi-input" /></label>
@@ -290,13 +359,13 @@ onBeforeUnmount(() => {
         <label>种子（-1 随机）<input v-model.number="seed" type="number" min="-1" class="bbi-input" /></label>
       </div>
       <div class="rh-bar">
-        <button class="bbi-btn bbi-btn-primary" :disabled="busy || saving || !!invalid || !config.apiKey.trim() || !prompt.trim()" @click="run()"><Icon name="generate" />生成一张（计费）</button>
+        <button class="bbi-btn bbi-btn-primary" :disabled="busy || saving || !!invalid || !hasKeys || !prompt.trim()" @click="run()"><Icon name="generate" />生成一张（计费）</button>
         <button v-if="busy" class="bbi-btn" @click="controller?.abort()"><Icon name="close" />取消</button>
         <span v-if="busy" role="status">{{ phaseLabels[phase] }}</span>
       </div>
       <details><summary>恢复已有任务</summary>
         <label class="rh-field"><span>任务 ID</span><input v-model="recoverId" class="bbi-input" /></label>
-        <button class="bbi-btn" :disabled="busy || saving || !recoverId.trim() || !config.apiKey.trim()" @click="run(true)"><Icon name="refresh" />获取结果（不重新生图）</button>
+        <button class="bbi-btn" :disabled="busy || saving || !recoverId.trim() || !selectedKey?.key" @click="run(true)"><Icon name="refresh" />获取结果（不重新生图）</button>
       </details>
       <p v-if="error" class="rh-warning" role="alert">{{ error }}</p>
       <figure v-if="preview" class="rh-preview">
@@ -313,10 +382,12 @@ onBeforeUnmount(() => {
       <article v-for="task in [...runningHubTasks].reverse()" :key="task.localId" class="rh-task">
         <div class="rh-bar"><strong>{{ task.name }}</strong><span>{{ phaseLabels[task.phase] }} {{ task.coins === undefined ? '' : `· ${task.coins} RH` }}</span></div>
         <code v-if="task.taskId">{{ task.taskId }}</code>
+        <span v-if="task.keyName"> · {{ task.keyName }}</span>
         <p v-if="task.error" class="rh-warning">{{ task.error }}</p>
       </article>
     </section>
     <ConfirmDialog v-model:open="removeOpen" title="删除工作流" confirm-text="删除" tone="danger" @confirm="remove">删除“{{ active.name }}”？云端工作流不会被删除。</ConfirmDialog>
+    <ConfirmDialog v-model:open="mangaOpen" title="应用漫画配置" confirm-text="应用" @confirm="applyManga">启用漫画模式，并将漫画版式缩放到 {{ active.portraitSize }} / {{ active.landscapeSize }}？<template v-if="active.mangaBundle">文件附带的漫画规范、检查指导和版式说明会替换当前内容，同 ID 版式会被更新。</template>其他自定义版式和启停状态保留；此全局设置也会影响其他漫画工作流。</ConfirmDialog>
   </div>
 </template>
 
@@ -357,6 +428,13 @@ details[open] > :not(summary) { margin-top: 10px; }
 .rh-task strong { font-size: 13px; }
 .rh-reference { font-size: 12px; }
 .rh-reference input { max-width: 100%; }
+.rh-key { display: grid; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--bbi-line); }
+.rh-key-name { flex: 1; max-width: 240px; }
+.rh-key-enable, .rh-key-limit { display: flex !important; align-items: center; gap: 8px; }
+.rh-key-limit input { width: 70px; }
+.rh-disclosure { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; padding: 8px 0; background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
+.rh-disclosure:focus-visible { outline: 2px solid var(--bbi-accent); }
+.rh-open { transform: rotate(180deg); }
 @media (max-width: 480px) {
   .rh-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .rh-node-controls { grid-template-columns: minmax(0, 1fr); }

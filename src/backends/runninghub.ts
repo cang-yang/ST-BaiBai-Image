@@ -1,6 +1,7 @@
 import { reactive } from 'vue';
 import type { ComfyImageResult, ComfyTemplateValues } from './comfyui';
-import { RUNNINGHUB_SITES, type RunningHubPreset, type RunningHubSettings } from './runninghubConfig';
+import { RUNNINGHUB_SITES, enabledRunningHubKeys, selectedRunningHubKey, type RunningHubPreset, type RunningHubSettings } from './runninghubConfig';
+import { acquireRunningHubKey } from './runninghubPool';
 import { buildRunningHubOverrides, validateRunningHubWorkflow, workflowIdFromText } from './runninghubWorkflow';
 
 type Json = Record<string, unknown>;
@@ -9,6 +10,9 @@ export interface RunningHubTask {
   localId: number;
   taskId: string;
   name: string;
+  keyId?: string;
+  keyName?: string;
+  site?: string;
   phase: RunningHubPhase;
   startedAt: number;
   seconds?: number;
@@ -90,14 +94,22 @@ async function request(
   }
 }
 
-export async function testRunningHubConnection(config: RunningHubSettings, signal?: AbortSignal): Promise<string> {
+function operationConfig(config: RunningHubSettings): RunningHubSettings {
+  const key = selectedRunningHubKey(config);
+  if (!key?.key) throw new RunningHubError('请选择已填写的 RunningHub Key');
+  return { ...config, apiKey: key.key };
+}
+
+export async function testRunningHubConnection(input: RunningHubSettings, signal?: AbortSignal): Promise<string> {
+  const config = operationConfig(input);
   const response = await request(config, '/uc/openapi/accountStatus', { apiKey: config.apiKey.trim() }, signal);
   const data = obj(response.data);
   const balance = data.remainCoins ?? data.balance;
   return balance === undefined ? '连接成功' : `连接成功 · 余额 ${String(balance)} RH`;
 }
 
-export async function uploadRunningHubImage(config: RunningHubSettings, file: File, signal?: AbortSignal): Promise<string> {
+export async function uploadRunningHubImage(input: RunningHubSettings, file: File, signal?: AbortSignal): Promise<string> {
+  const config = operationConfig(input);
   const url = baseUrl(config);
   if (!/^image\/(png|jpeg|webp)$/.test(file.type) || !file.size || file.size > 10 * 1024 * 1024) {
     throw new RunningHubError('参考图必须为 PNG、JPEG 或 WebP，且不超过 10 MB');
@@ -130,36 +142,6 @@ export async function uploadRunningHubImage(config: RunningHubSettings, file: Fi
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
   }
-}
-
-// Account-local concurrency limit. Waiting jobs abort without a billable submission.
-const lanes = new Map<string, { active: number; waiters: Set<() => void> }>();
-async function acquire(config: RunningHubSettings, signal?: AbortSignal): Promise<() => void> {
-  const key = `${config.url}\n${config.apiKey}`;
-  const lane = lanes.get(key) ?? { active: 0, waiters: new Set<() => void>() };
-  lanes.set(key, lane);
-  const limit = Math.max(1, Math.min(5, Math.floor(config.concurrency) || 1));
-  while (lane.active >= limit) {
-    await new Promise<void>((resolve, reject) => {
-      cancelled(signal);
-      const wake = () => { cleanup(); resolve(); };
-      const abort = () => { cleanup(); reject(new DOMException('已取消', 'AbortError')); };
-      const cleanup = () => { lane.waiters.delete(wake); signal?.removeEventListener('abort', abort); };
-      lane.waiters.add(wake);
-      signal?.addEventListener('abort', abort, { once: true });
-    });
-  }
-  cancelled(signal);
-  lane.active++;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    lane.active--;
-    const wake = lane.waiters.values().next().value;
-    if (wake) wake();
-    else if (lane.active === 0) lanes.delete(key);
-  };
 }
 
 export async function cancelRunningHubTask(config: RunningHubSettings, taskId: string): Promise<void> {
@@ -236,6 +218,7 @@ export interface RunningHubProgress {
 export interface RunningHubOutput {
   result: ComfyImageResult;
   taskId: string;
+  keyId?: string;
   coins?: number;
   seconds?: number;
 }
@@ -251,13 +234,14 @@ async function receive(
     const data = await query(config, task.taskId, signal);
     const status = String(data.status ?? '').toUpperCase();
     if (status === 'SUCCESS') {
-      task.coins = number(data.consumeCoins);
-      task.seconds = number(data.taskCostTime);
+      const usage = obj(data.usage);
+      task.coins = number(usage.consumeCoins) ?? number(data.consumeCoins);
+      task.seconds = number(usage.taskCostTime) ?? number(data.taskCostTime);
       const url = selectRunningHubImage(data.results, preset.outputNodeId);
       task.phase = 'downloading';
       hooks.onPhase?.('downloading');
       const result = await downloadImage(url, task.taskId, signal);
-      return { result, taskId: task.taskId, coins: task.coins, seconds: task.seconds };
+      return { result, taskId: task.taskId, keyId: task.keyId, coins: task.coins, seconds: task.seconds };
     }
     if (status === 'FAILED' || status === 'CANCELLED' || status === 'CANCELED') {
       throw new RunningHubError(safeDetail(data.errorMessage, config.apiKey) || `RunningHub 任务 ${status}`);
@@ -287,9 +271,16 @@ export async function generateRunningHubImage(
   signal?: AbortSignal, hooks: RunningHubProgress = {},
 ): Promise<RunningHubOutput> {
   // Capture settings once: editing/switching a preset must not redirect an in-flight task.
-  const config = { ...configInput, apiKey: configInput.apiKey.trim() };
+  const config = { ...configInput, apiKeys: configInput.apiKeys.map(key => ({ ...key })), apiKey: configInput.apiKey.trim() };
   const preset = { ...presetInput };
-  baseUrl(config);
+  if (preset.keyId) {
+    const pinned = enabledRunningHubKeys(config).find(key => key.id === preset.keyId);
+    if (!pinned) throw new RunningHubError('此工作流绑定的 Key 已删除、停用或未填写');
+    config.apiKeys = [pinned];
+  }
+  const keys = enabledRunningHubKeys(config);
+  if (!keys.length) throw new RunningHubError('没有已启用且填写完整的 RunningHub Key');
+  baseUrl({ ...config, apiKey: keys[0].key });
   if (!Number.isInteger(config.timeoutMinutes) || config.timeoutMinutes < 1 || config.timeoutMinutes > 60) {
     throw new RunningHubError('等待超时必须为 1–60 分钟');
   }
@@ -306,7 +297,12 @@ export async function generateRunningHubImage(
   let release: (() => void) | undefined;
   try {
     hooks.onPhase?.('waiting');
-    release = await acquire(config, signal);
+    const lease = await acquireRunningHubKey(config, signal);
+    release = lease.release;
+    config.apiKey = lease.key.key;
+    task.keyId = lease.key.id;
+    task.keyName = lease.key.name;
+    task.site = config.url;
     cancelled(signal);
     task.phase = 'submitting';
     hooks.onPhase?.('submitting');
@@ -348,13 +344,22 @@ export async function generateRunningHubImage(
 export async function recoverRunningHubImage(
   configInput: RunningHubSettings, taskId: string, outputNodeId = '', signal?: AbortSignal,
 ): Promise<RunningHubOutput> {
-  const config = { ...configInput, apiKey: configInput.apiKey.trim() };
+  const previous = runningHubTasks.find(task => task.taskId === taskId.trim() && task.keyId);
+  if (previous?.keyId && !configInput.apiKeys.some(key => key.id === previous.keyId) && !previous.keyId.startsWith('legacy-')) {
+    throw new RunningHubError('原任务的 Key 已删除，请恢复该 Key 后查询');
+  }
+  const recoveryConfig = { ...configInput, url: previous?.site ?? configInput.url, activeKeyId: previous?.keyId ?? configInput.activeKeyId };
+  const config = operationConfig(recoveryConfig);
   baseUrl(config);
   if (!Number.isInteger(config.timeoutMinutes) || config.timeoutMinutes < 1 || config.timeoutMinutes > 60) {
     throw new RunningHubError('等待超时必须为 1–60 分钟');
   }
   if (!/^[\w-]+$/.test(taskId.trim())) throw new RunningHubError('请输入有效任务 ID');
   const task = addTask('恢复已有任务', taskId.trim());
+  const key = selectedRunningHubKey(recoveryConfig);
+  task.keyId = key?.id;
+  task.keyName = key?.name;
+  task.site = config.url;
   try {
     const result = await receive({ ...config }, { outputNodeId } as RunningHubPreset, task, signal);
     task.phase = 'success';
