@@ -1,3 +1,5 @@
+import { addMissingWorldInfoFields, GENERATION_TYPE_TRIGGERS } from './vendor/entries';
+
 export interface ImageWorldEntry extends Record<string, unknown> {
   uid: number;
   comment: string;
@@ -65,26 +67,21 @@ export const imageWorldbookDefaults = (): ImageWorldbookSettings => ({
   enabled: true, inherit: true, contextSize: 8192, trigger: 'normal',
   scan: scanDefaults(), books: [],
 });
-export const generationTriggers = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'];
+export const generationTriggers: string[] = [...GENERATION_TYPE_TRIGGERS];
 export function entryDefaults(uid = 0): ImageWorldEntry {
-  return {
-    uid, comment: '', content: '', key: [], keysecondary: [], disable: false,
-    constant: false, selective: true, selectiveLogic: 0, order: 100, position: 0,
-    depth: 4, role: 0, probability: 100, useProbability: true,
-    excludeRecursion: false, preventRecursion: false, delayUntilRecursion: false,
-    scanDepth: null, caseSensitive: null, matchWholeWords: null, useGroupScoring: null,
-    group: '', groupOverride: false, groupWeight: 100, sticky: null, cooldown: null,
-    delay: null, ignoreBudget: false, triggers: [], outletName: '',
-  };
+  return addMissingWorldInfoFields([{ uid }])[0] as ImageWorldEntry;
 }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 export function parseEntry(raw: unknown, fallbackId: number): ImageWorldEntry {
-  if (!object(raw) || typeof raw.content !== 'string') throw new Error('条目必须包含字符串 content');
+  if (!object(raw)) throw new Error('条目必须是 JSON 对象');
   const base = entryDefaults(fallbackId);
-  const entry = { ...base, ...raw } as ImageWorldEntry;
-  // ST exports may leave role unset even though its effective default is SYSTEM.
+  // Backfill and repair fields before validation, exactly as the native editor does.
+  const entry = addMissingWorldInfoFields([{ ...base, ...raw }])[0] as ImageWorldEntry;
+  // The native scanner also supplies these effective defaults for null values.
   if (entry.role == null) entry.role = base.role;
+  if (entry.selectiveLogic == null) entry.selectiveLogic = base.selectiveLogic;
+  if (entry.triggers == null) entry.triggers = [];
   for (const field of ['key', 'keysecondary', 'triggers'] as const) {
     if (!Array.isArray(entry[field]) || entry[field].some(v => typeof v !== 'string')) throw new Error(`${field} 必须是字符串数组`);
   }
@@ -100,8 +97,8 @@ export function parseEntry(raw: unknown, fallbackId: number): ImageWorldEntry {
   for (const [field, max] of [['selectiveLogic', 3], ['position', 7], ['role', 2]] as const) {
     if (!Number.isInteger(entry[field]) || entry[field] < 0 || entry[field] > max) throw new Error(`${field} 超出酒馆原版范围`);
   }
-  for (const [field, value] of Object.entries(base)) {
-    if (typeof value === 'boolean' && field !== 'delayUntilRecursion' && typeof entry[field] !== 'boolean') throw new Error(`${field} 必须是布尔值`);
+  for (const field of ['disable', 'constant', 'selective', 'useProbability', 'excludeRecursion', 'preventRecursion', 'groupOverride', 'ignoreBudget'] as const) {
+    if (typeof entry[field] !== 'boolean') throw new Error(`${field} 必须是布尔值`);
   }
   for (const field of ['caseSensitive', 'matchWholeWords', 'useGroupScoring'] as const) {
     if (entry[field] !== null && typeof entry[field] !== 'boolean') throw new Error(`${field} 必须是布尔值或 null`);
@@ -123,7 +120,9 @@ export function importImageWorldBook(text: string, name: string): ImageWorldBook
   const entries: Record<string, ImageWorldEntry> = {};
   const uids = new Set<number>();
   for (const [key, raw] of items) {
-    const entry = parseEntry(raw, Number(key));
+    let entry: ImageWorldEntry;
+    try { entry = parseEntry(raw, Number(key)); }
+    catch (error) { throw new Error(`条目 ${key}：${error instanceof Error ? error.message : String(error)}`); }
     if (uids.has(entry.uid)) throw new Error(`重复的条目 uid：${entry.uid}`);
     uids.add(entry.uid);
     Object.defineProperty(entries, key, { value: entry, writable: true, enumerable: true, configurable: true });

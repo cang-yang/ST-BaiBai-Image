@@ -160,6 +160,24 @@ describe('private native world info scanner', () => {
       role: 'system', content: 'DEFAULT_ROLE_REFERENCE',
     });
   });
+  it('scans repaired native imports and injects their references into the tag request', async () => {
+    const input = setup([]);
+    input.config.books = [importImageWorldBook(JSON.stringify({ entries: {
+      '0': { constant: true, content: 'ALWAYS_REFERENCE', key: null, keysecondary: null, characterFilter: null, role: null },
+      '1': { key: ['forest'], keysecondary: ['river'], selectiveLogic: null, content: 'MATCHED_REFERENCE' },
+      '2': { key: ['forest'], keysecondary: ['snow'], selectiveLogic: null, content: 'UNMATCHED_REFERENCE' },
+      '3': {},
+    } }), 'legacy.json')];
+    const before = JSON.stringify(input.config);
+    const result = await scanImageWorldbooks(input);
+    expect(ids(result)).toEqual([0, 1]);
+    const messages = injectImageWorldbooks([{ role: 'user', content: 'story' }], result, 0);
+    const content = messages.map(m => m.content).join('\n');
+    expect(content).toContain('ALWAYS_REFERENCE');
+    expect(content).toContain('MATCHED_REFERENCE');
+    expect(content).not.toContain('UNMATCHED_REFERENCE');
+    expect(JSON.stringify(input.config)).toBe(before);
+  });
 });
 
 describe('ST JSON round trip', () => {
@@ -169,7 +187,7 @@ describe('ST JSON round trip', () => {
     expect(book.document).toEqual(doc);
     expect(normalizeImageWorldbooks({ books: [book] }).books[0]).toEqual(book);
   });
-  it.each(['{}', '{"entries":[]}', '{"entries":{"0":{"content":"x","key":"not-array"}}}', '{"entries":{"0":{"content":"x","position":99}}}'])('rejects invalid input atomically: %s', text => {
+  it.each(['{}', '{"entries":[]}', '{"entries":{"0":{"content":"x","key":[7]}}}', '{"entries":{"0":{"content":"x","position":99}}}'])('rejects invalid input atomically: %s', text => {
     expect(() => importImageWorldBook(text, 'bad.json')).toThrow();
   });
   it('does not mutate or drop entries when disabling the library', () => {
