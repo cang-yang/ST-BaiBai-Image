@@ -1,5 +1,6 @@
 /**
- * 正文清洗工具(与柏宝书 timeTag.ts 的 stripCustomTags 完全同口径,改动需双端同步)。
+ * 正文清洗工具。与柏宝书共享标签名单，按正文顺序删除外层噪声块，
+ * 不让已删除块内的标签示例跨到正文中继续配对。
  * 名单来自共享存储(settings.excludes.customStripTags),输入时已由 sanitizeTagName 消毒,
  * 这里只负责按标签名生成「整块删除」正则并执行。
  */
@@ -23,12 +24,7 @@ function blockStripRegexes(tag: string): RegExp[] {
 
 /** 删掉用户在设置里配置的自定义标签(整块:标签 + 内部内容)。空名单则原样返回。 */
 function replaceCustomTags(s: string, tags: string[], replacement: string): string {
-  let out = s;
-  for (const tag of tags) {
-    if (!tag) continue;
-    for (const re of blockStripRegexes(tag)) out = out.replace(re, replacement);
-  }
-  return out;
+  return replaceRanges(s, scopedRemovalRanges(s, tags.filter(Boolean).flatMap(blockStripRegexes)), replacement);
 }
 
 export function stripCustomTags(s: string, tags: string[]): string {
@@ -68,11 +64,8 @@ function clampToStoryBody(
   const customTags = preserveImageTags
     ? tags.filter(tag => tag.toLowerCase() !== 'bbi_image')
     : tags;
-  let s = String(mes ?? '')
-    .replace(RE_THINK_BLOCK, noiseReplacement)
-    .replace(/<!--[\s\S]+?-->/g, noiseReplacement)
-    .replace(/<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi, noiseReplacement);
-  s = replaceCustomTags(s, customTags, noiseReplacement);
+  const source = String(mes ?? '');
+  let s = replaceRanges(source, scopedRemovalRanges(source, noisePatterns(customTags)), noiseReplacement);
   s = stripManagedTags(s);
 
   const startRe = /<bbs_start\b/gi;
@@ -130,6 +123,51 @@ function rangesForRegex(source: string, pattern: RegExp): RemovalRange[] {
     .map(match => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
 }
 
+function noisePatterns(tags: string[]): RegExp[] {
+  return [
+    RE_THINK_BLOCK,
+    /<!--[\s\S]+?-->/g,
+    /<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi,
+    ...tags.filter(Boolean).flatMap(blockStripRegexes),
+  ];
+}
+
+/** Consume the first outer block, then scan beyond it; inner examples cannot pair with later real tags. */
+function scopedRemovalRanges(source: string, patterns: RegExp[]): RemovalRange[] {
+  const regexes = patterns.map(pattern => new RegExp(
+    pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
+  ));
+  const ranges: RemovalRange[] = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    let first: RemovalRange | undefined;
+    for (const regex of regexes) {
+      regex.lastIndex = cursor;
+      const match = regex.exec(source);
+      if (!match?.[0].length) continue;
+      const range = { start: match.index, end: match.index + match[0].length };
+      if (!first || range.start < first.start || (range.start === first.start && range.end > first.end)) {
+        first = range;
+      }
+    }
+    if (!first) break;
+    ranges.push(first);
+    cursor = first.end;
+  }
+  return ranges;
+}
+
+function replaceRanges(source: string, ranges: RemovalRange[], replacement: string): string {
+  const pieces: string[] = [];
+  let cursor = 0;
+  for (const range of ranges) {
+    pieces.push(source.slice(cursor, range.start), replacement);
+    cursor = range.end;
+  }
+  pieces.push(source.slice(cursor));
+  return pieces.join('');
+}
+
 function mergeRanges(ranges: RemovalRange[]): RemovalRange[] {
   const sorted = ranges
     .filter(range => range.end > range.start)
@@ -183,15 +221,7 @@ function retainedLineText(source: string, line: SourceLineRange, ranges: Removal
 }
 
 function targetRemovalRanges(source: string, tags: string[]): RemovalRange[] {
-  const noise: RemovalRange[] = [
-    ...rangesForRegex(source, RE_THINK_BLOCK),
-    ...rangesForRegex(source, /<!--[\s\S]+?-->/g),
-    ...rangesForRegex(source, /<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi),
-  ];
-  for (const tag of [...tags, 'bbs_items', 'bbs_vars']) {
-    if (!tag) continue;
-    for (const regex of blockStripRegexes(tag)) noise.push(...rangesForRegex(source, regex));
-  }
+  const noise = scopedRemovalRanges(source, noisePatterns([...tags, 'bbs_items', 'bbs_vars']));
 
   const masked = maskedSource(source, noise);
   const crop: RemovalRange[] = [];

@@ -43,9 +43,54 @@ describe('stripCustomTags', () => {
   it('多个标签依次整删', () => {
     expect(stripCustomTags('<a>1</a>x<b>2</b>y', ['a', 'b'])).toBe('xy');
   });
+
+  it.each([
+    ['UpdateVariable', 'LJNX_NEWS', 'fx引擎', 'think_nya~'],
+    ['think_nya~', 'fx引擎', 'LJNX_NEWS', 'UpdateVariable'],
+  ])('ignores tag examples inside discarded blocks regardless of list order: %j', (...tags) => {
+    const text = '<think_nya~>Later emit <UpdateVariable> and <LJNX_NEWS>.</think_nya~>'
+      + '<fx引擎>planning</fx引擎>first story'
+      + '<LJNX_NEWS>news</LJNX_NEWS>second story'
+      + '<UpdateVariable>state</UpdateVariable>';
+    expect(stripCustomTags(text, tags)).toBe('first storysecond story');
+  });
 });
 
 describe('prompt body cleaning', () => {
+  const quotedTagSource = [
+    '<think_nya~>',
+    'Example output: <LJNX_NEWS>, <fx引擎>, <UpdateVariable>.',
+    '</think_nya~><fx引擎>planning</fx引擎><bbs_start>10:00</bbs_start>',
+    'first story',
+    '<LJNX_NEWS>news</LJNX_NEWS>',
+    'second story<bbs_end>10:10</bbs_end>',
+    '<UpdateVariable>state</UpdateVariable>',
+  ].join('\n');
+  const quotedTags = ['UpdateVariable', 'LJNX_NEWS', 'fx引擎', 'think_nya~'];
+
+  it('retains original story line anchors after discarding quoted custom tags', () => {
+    expect(prepareTargetText(quotedTagSource, quotedTags).segments).toEqual([
+      { id: 'P1', sourceLine: 3, text: 'first story' },
+      { id: 'P2', sourceLine: 5, text: 'second story' },
+    ]);
+  });
+
+  it('keeps the same story in history cleaning', () => {
+    expect(cleanHistoryText(quotedTagSource, quotedTags)).toBe(
+      '(起始时间:10:00)\nfirst story\n\nsecond story(结束时间:10:10)',
+    );
+  });
+
+  it.each([
+    ['<think>', '</think>'],
+    ['<!--', '-->'],
+    ['<horae>', '</horae>'],
+    ['<bbs_items>', '</bbs_items>'],
+  ])('does not match custom tags across a removed %s block', (open, close) => {
+    const text = `${open}example <state>${close}\nfirst story\n<state>hidden</state>\nlast story`;
+    expect(cleanTargetText(text, ['state'])).toBe('first story\n\nlast story');
+  });
+
   it('does not offer standalone container tags as picture positions', () => {
     const text = '<now_plot>\n正文\n</now_plot>\n<summary>\n摘要\n</summary>\n<update data-type="state">\n状态\n</update>';
     expect(prepareTargetText(text, []).segments).toEqual([
