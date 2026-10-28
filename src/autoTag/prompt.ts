@@ -36,6 +36,8 @@ import {
   settings,
 } from '@/state/settings';
 import { buildMangaSpec, resolveLayouts } from '@/manga/layouts';
+import { fetchImageWorldbooks } from '@/worldbook/runtime';
+import { injectImageWorldbooks } from '@/worldbook/engine';
 
 /**
  * 本次自动 tag 的协议形态。按默认后端与其开关算**一次**,写协议(本模块)与验收/收尾
@@ -192,10 +194,11 @@ export async function buildAutoTagMessages(
   // 世界书/角色卡/人设:与柏宝书摘要副 API 同口径(有则带,取不到降级为空,不影响主流程)。
   // 世界书扫描文本 = 目标楼 + 携带的上下文楼(关键词激活与主对话一致)。
   const scanFloors = recentFloors(context, targetFloor, options.contextMessages);
-  const [worldInfo, charCard, persona] = await Promise.all([
+  const [worldInfo, charCard, persona, imageWorldbooks] = await Promise.all([
     fetchWorldInfo(context.chat, scanFloors, context.name1, context.name2),
     Promise.resolve(fetchCharCard(context)),
     Promise.resolve(fetchUserPersona(context)),
+    fetchImageWorldbooks(context, targetFloor),
   ]);
 
   // 自然语言模式(profile.nl):ComfyUI 当前工作流或 NAI 渠道开启了「生成自然语言」。
@@ -395,6 +398,7 @@ ${characterRule}
       ? '内部核对事实与状态、人物归属、镜头与接触、光影与细节、文字与读序、JSON与坐标；只给一个简短英文检查摘要及宿主最终 JSON。tag 为完整 Layout JSON 字符串，nl 留空，不输出逐格推理或提示词草稿。'
       : backendThinkingPrompt(options, nlOn, naiCharPromptsOn));
   if (thinking) messages.push({ role: 'system', content: thinking, purpose: 'check' });
+  const characterIndex = messages.length;
   if (charCard) messages.push({ role: 'system', content: buildCharCardSystem(charCard) });
   if (persona) messages.push({ role: 'system', content: buildPersonaSystem(persona) });
   if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo) });
@@ -402,5 +406,5 @@ ${characterRule}
   const taskBlock = taskNote?.trim() ? `${taskNote.trim()}\n\n` : '';
   const userContent = `${memoryText}\n\n${libraryBlock}\n\n${taskBlock}${previous ? `${previous}\n\n` : ''}--- 目标正文｜${roleLabel(context, targetFloor)} ---\n${preparedTarget.promptText}`;
   messages.push({ role: 'user', content: userContent });
-  return messages;
+  return injectImageWorldbooks(messages, imageWorldbooks, characterIndex);
 }

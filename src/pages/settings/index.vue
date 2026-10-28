@@ -3,6 +3,7 @@ import BbiSelect from '@/components/BbiSelect.vue';
 import BbiTextarea from '@/components/BbiTextarea.vue';
 import Collapsible from '@/components/Collapsible.vue';
 import MangaSection from '@/pages/settings/MangaSection.vue';
+import ImageWorldbookSection from '@/pages/settings/ImageWorldbookSection.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
@@ -773,6 +774,9 @@ async function confirmUpdate() {
       <!-- 排除角色:名单与柏宝书共享(见 state/settings.ts 的共享存储),任一端改动自动同步 -->
       <Collapsible title="漫画 Layout" :open="false">
         <MangaSection />
+      </Collapsible>
+      <Collapsible title="生图世界书" :open="false">
+        <ImageWorldbookSection />
       </Collapsible>
 
       <Collapsible title="排除角色" :open="false">

@@ -19,6 +19,7 @@ import {
 } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
 import { mangaDefaults, normalizeManga, type MangaSettings } from '@/manga/layouts';
+import { imageWorldbookDefaults, normalizeImageWorldbooks, type ImageWorldbookSettings } from '@/worldbook/model';
 import { reactive, watch } from 'vue';
 import { newRunningHubPreset, normalizeRunningHub, runningHubDefaults, type RunningHubSettings } from '@/backends/runninghubConfig';
 
@@ -1050,6 +1051,7 @@ export interface ImageSettings {
   storage: StoragePrefs;
   /** 漫画 Layout 模式:模型只写符号框(panel/slot),坐标由插件查表注入。 */
   manga: MangaSettings;
+  imageWorldbooks: ImageWorldbookSettings;
 }
 
 // extension_settings 里的命名空间键。
@@ -1218,6 +1220,7 @@ function defaults(): ImageSettings {
     excludes: excludesDefaults(),
     storage: { saveAsJpeg: true },
     manga: mangaDefaults(),
+    imageWorldbooks: imageWorldbookDefaults(),
   };
 }
 
@@ -1848,6 +1851,7 @@ function normalize(raw: unknown): ImageSettings {
     saveAsJpeg: typeof rs.saveAsJpeg === 'boolean' ? rs.saveAsJpeg : d.storage.saveAsJpeg,
   };
   merged.manga = normalizeManga(r.manga);
+  merged.imageWorldbooks = normalizeImageWorldbooks(r.imageWorldbooks);
   return merged;
 }
 
@@ -1879,6 +1883,7 @@ function applyInto(target: ImageSettings, src: ImageSettings): void {
   target.excludes = src.excludes;
   target.storage = src.storage;
   target.manga = src.manga;
+  target.imageWorldbooks = src.imageWorldbooks;
 }
 
 /* —— 渠道共享存储:与柏宝书等「柏宝」插件共用同一份渠道列表 ——
