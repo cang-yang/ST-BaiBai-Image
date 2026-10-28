@@ -83,6 +83,8 @@ export function parseEntry(raw: unknown, fallbackId: number): ImageWorldEntry {
   if (!object(raw) || typeof raw.content !== 'string') throw new Error('条目必须包含字符串 content');
   const base = entryDefaults(fallbackId);
   const entry = { ...base, ...raw } as ImageWorldEntry;
+  // ST exports may leave role unset even though its effective default is SYSTEM.
+  if (entry.role == null) entry.role = base.role;
   for (const field of ['key', 'keysecondary', 'triggers'] as const) {
     if (!Array.isArray(entry[field]) || entry[field].some(v => typeof v !== 'string')) throw new Error(`${field} 必须是字符串数组`);
   }

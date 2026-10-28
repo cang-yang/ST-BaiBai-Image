@@ -151,6 +151,15 @@ describe('private native world info scanner', () => {
     expect(messages.slice(1).every(m => !m.purpose)).toBe(true);
     expect(injectImageWorldbooks([prefix], emptyScan(), 1)).toEqual([prefix]);
   });
+  it('uses SYSTEM for an imported depth entry whose role is null', async () => {
+    const input = setup([{ constant: true, position: 4, depth: 0, content: 'DEFAULT_ROLE_REFERENCE' }]);
+    (input.config.books[0].document.entries['0'] as Record<string, unknown>).role = null;
+    const result = await scanImageWorldbooks(input);
+    expect(result.WIDepthEntries).toEqual([{ depth: 0, role: 0, entries: ['DEFAULT_ROLE_REFERENCE'] }]);
+    expect(injectImageWorldbooks([{ role: 'user', content: 'story' }], result, 0).at(-1)).toEqual({
+      role: 'system', content: 'DEFAULT_ROLE_REFERENCE',
+    });
+  });
 });
 
 describe('ST JSON round trip', () => {
