@@ -18,6 +18,8 @@ import { randomSeed } from '@/backends/comfyui';
 import { saveExternalImage } from '@/floor/storage';
 import { getContext } from '@/st/context';
 import type { GenerationMeta } from '@/generationMeta';
+import { presetWithMangaRules, snapshotPreset, MAX_LIBRARY_BYTES } from '@/presets/model';
+import { builtinImagePreset } from '@/presets/catalog';
 
 const active = computed(() => activeRunningHubPreset());
 const config = computed(() => settings.runninghub);
@@ -114,7 +116,17 @@ function importText(text: string, name?: string) {
 }
 function applyManga() {
   try {
-    settings.manga = runningHubMangaSettings(active.value, settings.manga);
+    const manga = runningHubMangaSettings(active.value, settings.manga);
+    const bundle = active.value.mangaBundle;
+    if (bundle) {
+      const preset = presetWithMangaRules(snapshotPreset(settings.imagePresets) ?? builtinImagePreset(), active.value.name, bundle);
+      if (new Blob([JSON.stringify([...settings.imagePresets.presets, preset])]).size > MAX_LIBRARY_BYTES) throw new Error('预设库总大小不能超过 10 MB');
+      settings.imagePresets.presets.push(preset);
+      settings.imagePresets.activeId = preset.id;
+      toastr.success(`已使用配图预设「${preset.name}」`, '柏宝绘');
+    }
+    // These fields are legacy backups only; new text belongs to the named preset above.
+    settings.manga = { ...manga, spec: settings.manga.spec, thinking: settings.manga.thinking };
     active.value.manga = true;
     active.value.naturalLanguage = false;
     error.value = '';
@@ -387,7 +399,7 @@ onBeforeUnmount(() => {
       </article>
     </section>
     <ConfirmDialog v-model:open="removeOpen" title="删除工作流" confirm-text="删除" tone="danger" @confirm="remove">删除“{{ active.name }}”？云端工作流不会被删除。</ConfirmDialog>
-    <ConfirmDialog v-model:open="mangaOpen" title="应用漫画配置" confirm-text="应用" @confirm="applyManga">启用漫画模式，并将漫画版式缩放到 {{ active.portraitSize }} / {{ active.landscapeSize }}？<template v-if="active.mangaBundle">文件附带的漫画规范、检查指导和版式说明会替换当前内容，同 ID 版式会被更新。</template>其他自定义版式和启停状态保留；此全局设置也会影响其他漫画工作流。</ConfirmDialog>
+    <ConfirmDialog v-model:open="mangaOpen" title="应用漫画配置" confirm-text="应用" @confirm="applyManga">启用漫画模式，并将漫画版式缩放到 {{ active.portraitSize }} / {{ active.landscapeSize }}？<template v-if="active.mangaBundle">漫画规范与检查指导将保存为新配图预设并立即使用，原预设保留；附带的版式说明及同 ID 版式会更新。</template>其他自定义版式和启停状态保留；版式设置也会影响其他漫画工作流。</ConfirmDialog>
   </div>
 </template>
 

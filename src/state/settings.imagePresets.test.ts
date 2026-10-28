@@ -21,7 +21,7 @@ describe('image preset persistence', () => {
     const { hydrateSettings, settings } = await import('./settings');
     const { nextTick } = await import('vue');
     await hydrateSettings();
-    expect(settings.imagePresets).toEqual(config);
+    expect(settings.imagePresets).toEqual({ ...config, rulesVersion: 2 });
     settings.imagePresets.presets[0].entries[0].content = 'revised rule';
     await nextTick();
     expect(mock.context.extensionSettings.baibai_image.imagePresets.presets[0].entries[0].content).toBe('revised rule');
@@ -33,6 +33,29 @@ describe('image preset persistence', () => {
     mock.context = { extensionSettings: { baibai_image: {} }, saveSettingsDebounced: vi.fn() };
     const { hydrateSettings, settings } = await import('./settings');
     await hydrateSettings();
-    expect(settings.imagePresets).toEqual(presetDefaults());
+    expect(settings.imagePresets).toEqual({ ...presetDefaults(), rulesVersion: 2 });
+  });
+  it('persists the migration marker and independent rules across reloads', async () => {
+    mock.context = {
+      extensionSettings: { baibai_image: {
+        autoTag: { prompts: { comfySpec: 'ORIGINAL_RULE' } },
+        manga: { spec: 'ORIGINAL_MANGA' },
+      } }, saveSettingsDebounced: vi.fn(),
+    };
+    const first = await import('./settings');
+    await first.hydrateSettings();
+    await (await import('vue')).nextTick();
+    const saved = JSON.parse(JSON.stringify(mock.context.extensionSettings));
+    expect(saved.baibai_image.imagePresets.rulesVersion).toBe(2);
+    expect(saved.baibai_image.imagePresets.presets).toHaveLength(1);
+    saved.baibai_image.autoTag.prompts.comfySpec = 'BACKUP_ONLY';
+    mock.context.extensionSettings = saved;
+    vi.resetModules();
+    const reloaded = await import('./settings');
+    await reloaded.hydrateSettings();
+    expect(reloaded.settings.imagePresets.presets).toHaveLength(1);
+    expect(reloaded.settings.imagePresets.activeId).toBe(saved.baibai_image.imagePresets.activeId);
+    expect(reloaded.settings.imagePresets.presets[0].rules?.comfySpec.text).toBe('ORIGINAL_RULE');
+    expect(reloaded.settings.imagePresets.presets[0].rules?.mangaSpec.text).toBe('ORIGINAL_MANGA');
   });
 });

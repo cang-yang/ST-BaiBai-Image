@@ -261,17 +261,6 @@ function resetBuiltin(id: string): void {
     <p class="bbi-manga-hint">当前可用版式 {{ activeCount }} / {{ rows.length }}。</p>
     <button v-if="settings.manga.deleted.length" type="button" class="bbi-manga-btn" @click="restoreDeleted">恢复已删除的默认版式（{{ settings.manga.deleted.length }}）</button>
 
-    <div class="bbi-manga-editor">
-      <p class="bbi-manga-hint">
-        漫画规范：只在开关打开时生效，留空则沿用「自动生成 tag」里的后端规范框。版式清单由插件自动接在它后面，这里不要写坐标。
-      </p>
-      <textarea v-model="settings.manga.spec" class="bbi-input bbi-manga-code" spellcheck="false" placeholder="粘贴漫画 1080p 规范全文"></textarea>
-      <p class="bbi-manga-hint">
-        漫画检查指导：同样只在开关打开时生效，留空则沿用常规思考清单（或插件内置的 Layout 默认）。
-      </p>
-      <textarea v-model="settings.manga.thinking" class="bbi-input bbi-manga-notes" spellcheck="false" placeholder="粘贴输出前检查指导全文"></textarea>
-    </div>
-
     <div class="bbi-manga-row">
       <label for="bbi-manga-bleed">出框基准（px）</label>
       <input

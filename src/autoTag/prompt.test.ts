@@ -14,6 +14,7 @@ import {
 import type { STContext } from '@/st/context';
 import { applyMangaFrames, mangaDefaults } from '@/manga/layouts';
 import { newImagePreset } from '@/presets/model';
+import { builtinImagePreset } from '@/presets/catalog';
 
 /**
  * 提示词集:全部留空(= 回落内置默认),只把本用例关心的那几项覆盖掉。
@@ -62,10 +63,73 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
+  it('switches owned rules without leaking legacy global text or another preset', async () => {
+    const oldBackend = settings.defaultBackend, oldManga = settings.manga, oldSpec = settings.autoTag.prompts.comfySpec;
+    try {
+      settings.defaultBackend = 'comfyui';
+      settings.manga = mangaDefaults();
+      settings.autoTag.prompts.comfySpec = '[BBI_FORMAT:MOSS_LAYOUT]\nHIDDEN_GLOBAL';
+      const options: AutoTagSettings = {
+        enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 1,
+        autoGenerate: true, prompts: prompts({ jailbreak: 'HIDDEN_PREFIX', comfySpec: 'HIDDEN_SPEC', comfyThinking: 'HIDDEN_CHECK' }),
+      };
+      const a = newImagePreset(), b = newImagePreset();
+      a.rules!.comfySpec = { mode: 'custom', text: 'SPEC_A' };
+      a.rules!.comfyThinking = { mode: 'custom', text: 'CHECK_A' };
+      a.rules!.jailbreak = { mode: 'custom', text: 'PREFIX_A' };
+      b.rules!.comfySpec = { mode: 'custom', text: 'SPEC_B' };
+      b.rules!.comfyThinking.mode = 'off';
+      for (const preset of [a, b, builtinImagePreset()]) {
+        const profile = autoTagProfile(preset);
+        expect(profile.layout).toBeUndefined();
+        const messages = await buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', profile, preset);
+        const text = messages.map(m => m.content).join('\n');
+        expect(text).not.toContain('HIDDEN_');
+        expect(text.includes('SPEC_A')).toBe(preset === a);
+        expect(text.includes('CHECK_A')).toBe(preset === a);
+        expect(text.includes('PREFIX_A')).toBe(preset === a);
+        expect(text.includes('SPEC_B')).toBe(preset === b);
+        if (preset === b) expect(messages.some(m => m.purpose === 'check')).toBe(false);
+        expect(messages.some(m => m.purpose === 'contract')).toBe(true);
+      }
+    } finally {
+      settings.defaultBackend = oldBackend; settings.manga = oldManga; settings.autoTag.prompts.comfySpec = oldSpec;
+    }
+  });
+  it('keeps manga layout contracts when optional rules are off and ignores old manga text', async () => {
+    const oldBackend = settings.defaultBackend, oldManga = settings.manga;
+    try {
+      settings.defaultBackend = 'comfyui';
+      settings.manga = { ...mangaDefaults(), enabled: true, spec: 'HIDDEN_MANGA_SPEC', thinking: 'HIDDEN_MANGA_CHECK' };
+      const preset = newImagePreset();
+      preset.rules!.comfySpec = { mode: 'custom', text: 'ORDINARY_ONLY' };
+      preset.rules!.mangaSpec = { mode: 'custom', text: 'OWN_MANGA' };
+      preset.rules!.mangaThinking = { mode: 'custom', text: 'OWN_CHECK' };
+      const options: AutoTagSettings = { enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 1, autoGenerate: true, prompts: prompts() };
+      const build = () => buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', autoTagProfile(preset), preset);
+      const on = (await build()).map(m => m.content).join('\n');
+      expect(on).toContain('OWN_MANGA');
+      expect(on).toContain('OWN_CHECK');
+      expect(on).not.toContain('HIDDEN_MANGA');
+      expect(on).not.toContain('ORDINARY_ONLY');
+      preset.rules!.mangaSpec.mode = 'off'; preset.rules!.mangaThinking.mode = 'off';
+      const off = await build(), text = off.map(m => m.content).join('\n');
+      expect(text).not.toContain('OWN_MANGA');
+      expect(text).not.toContain('OWN_CHECK');
+      expect(text).not.toContain('HIDDEN_MANGA');
+      expect(text).toContain('balanced_1');
+      expect(text).toContain('MOSS Layout 模式');
+      expect(off.some(m => m.purpose === 'check')).toBe(false);
+      settings.manga.enabled = false;
+      preset.format = 'moss_layout';
+      expect(autoTagProfile(preset).layout).toBe(true);
+    } finally { settings.defaultBackend = oldBackend; settings.manga = oldManga; }
+  });
   it('uses a native preset without the legacy prefix while retaining host position and output contracts', async () => {
     const preset = newImagePreset();
     preset.output = 'tool';
-    preset.useBackendRules = false;
+    preset.rules!.comfySpec.mode = 'off';
+    preset.rules!.comfyThinking.mode = 'off';
     preset.entries[0].content = 'CUSTOM_RULE {{user}} {{max_images}}';
     const options: AutoTagSettings = {
       enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 1,
@@ -80,7 +144,7 @@ describe('auto tag prompt', () => {
     expect(text).toContain('目标第一行');
     expect(text).toContain('P1');
     expect(messages.some(m => m.purpose === 'check')).toBe(false);
-    preset.useBackendRules = true;
+    preset.rules!.comfyThinking.mode = 'builtin';
     const withChecks = await buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', autoTagProfile(), preset);
     expect(withChecks.find(m => m.purpose === 'check')?.content).toContain('仅供内部核对');
     preset.entries[0].content = '{{not_provided}}';

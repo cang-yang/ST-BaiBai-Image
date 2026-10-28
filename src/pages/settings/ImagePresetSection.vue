@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
+import PresetRuleEditor from './PresetRuleEditor.vue';
 import { settings } from '@/state/settings';
 import { getContext, isAiStoryMessage } from '@/st/context';
 import { buildAutoTagMessages, autoTagProfile } from '@/autoTag/prompt';
@@ -16,11 +17,30 @@ import {
   type ImagePromptPreset,
 } from '@/presets/model';
 import { PRESET_VARIABLES, type RenderedPreset } from '@/presets/render';
+import { builtinImagePreset, RULE_TARGETS } from '@/presets/catalog';
+import { legacyRules } from '@/presets/rules';
 
 const config = computed(() => settings.imagePresets);
 const picker = ref<HTMLInputElement>();
 const selected = ref(config.value.activeId);
 const preset = computed(() => config.value.presets.find(p => p.id === selected.value));
+const displayed = computed(() => draft.value ?? preset.value ?? builtinImagePreset());
+const ruleTarget = ref<string>('comfy');
+const target = computed(() => RULE_TARGETS.find(t => t.value === ruleTarget.value) ?? RULE_TARGETS[0]);
+const effectiveTarget = computed(() => {
+  const profile = autoTagProfile(displayed.value);
+  return profile.layout ? RULE_TARGETS[1] : settings.defaultBackend === 'nai' ? RULE_TARGETS[profile.naiCharPrompts ? 2 : 3] : RULE_TARGETS[0];
+});
+const ruleModes = { builtin: '内置参考', custom: '本预设自定义', off: '不附加' };
+const viewRules = computed(() => displayed.value.rules ?? legacyRules({}, {}, displayed.value.useBackendRules !== false));
+const editorTab = ref('content');
+const editorTabs = [{ id: 'content', label: '画面要求' }, { id: 'rules', label: '书写规范' }, { id: 'advanced', label: '高级' }];
+function tabKey(event: KeyboardEvent, index: number): void {
+  const next = event.key === 'ArrowRight' ? (index + 1) % 3 : event.key === 'ArrowLeft' ? (index + 2) % 3 : event.key === 'Home' ? 0 : event.key === 'End' ? 2 : -1;
+  if (next < 0) return;
+  event.preventDefault(); editorTab.value = editorTabs[next].id;
+  (event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
+}
 const activeName = computed(() => config.value.presets.find(p => p.id === config.value.activeId)?.name ?? '内置默认');
 const draft = ref<ImagePromptPreset>();
 const variables = ref<{ name: string; value: string }[]>([]);
@@ -39,12 +59,15 @@ watch(selected, () => { preview.value = []; checkResult.value = undefined; resul
 function fail(e: unknown): void { error.value = e instanceof Error ? e.message : String(e); }
 function edit(value: ImagePromptPreset): void {
   draft.value = JSON.parse(JSON.stringify(value));
+  draft.value!.rules ??= legacyRules({}, {}, value.useBackendRules !== false);
   variables.value = Object.entries(value.variables).map(([name, value]) => ({ name, value }));
   entryId.value = value.entries[0]?.id ?? '';
   search.value = ''; error.value = ''; notice.value = ''; preview.value = []; checkResult.value = undefined; result.value = '';
+  ruleTarget.value = effectiveTarget.value.value;
+  editorTab.value = value.entries.length ? 'content' : 'rules';
 }
 function current(): ImagePromptPreset | null {
-  if (!draft.value) return preset.value ? validatePreset(JSON.parse(JSON.stringify(preset.value))) : null;
+  if (!draft.value) return validatePreset(JSON.parse(JSON.stringify(displayed.value)));
   const names = variables.value.map(v => v.name.trim());
   if (new Set(names).size !== names.length) throw new Error('变量名不能重复');
   return validatePreset({ ...draft.value, variables: Object.fromEntries(variables.value.map((v, i) => [names[i], v.value])) });
@@ -63,8 +86,7 @@ function save(): void {
   } catch (e) { fail(e); }
 }
 function duplicate(): void {
-  if (!preset.value) return;
-  const copy = importPresets(exportPreset(preset.value))[0];
+  const copy = importPresets(exportPreset(preset.value ?? builtinImagePreset()))[0];
   copy.name += ' 副本'; edit(copy);
 }
 async function importFiles(event: Event): Promise<void> {
@@ -91,10 +113,10 @@ async function importFiles(event: Event): Promise<void> {
   finally { input.value = ''; }
 }
 function download(): void {
-  if (!preset.value) return;
+  const exported = preset.value ?? builtinImagePreset();
   try {
-    const url = URL.createObjectURL(new Blob([exportPreset(preset.value)], { type: 'application/json' }));
-    const a = document.createElement('a'); a.href = url; a.download = `${preset.value.name.replace(/[<>:"/\\|?*]/g, '_')}.json`; a.click();
+    const url = URL.createObjectURL(new Blob([exportPreset(exported)], { type: 'application/json' }));
+    const a = document.createElement('a'); a.href = url; a.download = `${exported.name.replace(/[<>:"/\\|?*]/g, '_')}.json`; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (e) { fail(e); }
 }
@@ -134,7 +156,7 @@ async function inspect(send: boolean): Promise<void> {
     if (floor < 0) throw new Error('请先填写测试正文，或打开已有回复的聊天');
     const prepared = prepareTargetText(context.chat[floor].mes, settings.excludes.customStripTags);
     const options = JSON.parse(JSON.stringify(settings.autoTag));
-    const profile = autoTagProfile();
+    const profile = autoTagProfile(chosen ?? builtinImagePreset());
     const assigned = settings.channels.find(c => c.id === settings.assignments.tagGen);
     const channel = assigned ? JSON.parse(JSON.stringify(assigned)) as typeof assigned : null;
     const direct = !!channel && config.value.directChannels.includes(channel.id);
@@ -175,14 +197,14 @@ async function inspect(send: boolean): Promise<void> {
       <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" @click="edit(newImagePreset())"><Icon name="plus" />新建</button>
       <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" @click="picker?.click()"><Icon name="download" />导入</button>
       <input ref="picker" type="file" hidden multiple accept=".json,application/json" @change="importFiles" />
-      <template v-if="preset">
-        <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" title="编辑预设" @click="edit(preset)"><Icon name="edit" />编辑</button>
+      <template v-if="displayed">
+        <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" :title="preset ? '编辑预设' : '复制内置默认后编辑'" @click="preset ? edit(preset) : duplicate()"><Icon name="edit" />{{ preset ? '编辑' : '复制并编辑' }}</button>
         <details class="ip-manage">
           <summary class="bbi-btn bbi-btn-sm" title="预设管理" aria-label="预设管理"><Icon name="more" /></summary>
           <div class="ip-menu">
             <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" title="复制为新预设" @click="duplicate"><Icon name="copy" />复制</button>
             <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" title="导出预设" @click="download"><Icon name="upload" />导出</button>
-            <button class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" title="删除预设" @click="removeTarget = preset"><Icon name="trash" />删除</button>
+            <button v-if="preset" class="bbi-btn bbi-btn-sm" :disabled="!!draft || busy" title="删除预设" @click="removeTarget = preset"><Icon name="trash" />删除</button>
           </div>
         </details>
       </template>
@@ -190,15 +212,30 @@ async function inspect(send: boolean): Promise<void> {
     <p v-if="error" class="ip-error" role="alert">{{ error }}</p>
     <p v-if="notice" class="ip-status" role="status">{{ notice }}</p>
     <p v-if="preset?.description && !draft" class="ip-muted">{{ preset.description }}</p>
+    <div class="ip-effective" aria-label="本次生效配置">
+      <div class="ip-toolbar"><strong>{{ draft ? '草稿配置' : selected === config.activeId ? '当前生效配置' : '所选预设 · 尚未启用' }}</strong><span>{{ effectiveTarget.label }}</span></div>
+      <dl>
+        <dt>画面要求</dt><dd>{{ displayed.entries.filter(e => e.enabled).length }} 个开启条目</dd>
+        <dt>书写规范</dt><dd>{{ ruleModes[viewRules[effectiveTarget.spec].mode] }}</dd>
+        <dt>检查指导</dt><dd>{{ ruleModes[viewRules[effectiveTarget.check].mode] }}</dd>
+        <dt>前置规则</dt><dd>{{ ruleModes[viewRules.jailbreak.mode] }}</dd>
+        <dt>插件固定要求</dt><dd>图片位置、数量、输出结构{{ effectiveTarget.value === 'manga' ? '、版式约束' : '' }}</dd>
+      </dl>
+    </div>
     <details v-if="(draft ?? preset)?.warnings.length" class="ip-warning" open>
       <summary>导入兼容性提醒</summary><ul><li v-for="warning in (draft ?? preset)?.warnings" :key="warning">{{ warning }}</li></ul>
     </details>
     <fieldset v-if="draft" class="ip-editor" :disabled="busy">
       <label>预设名称<input v-model="draft.name" class="bbi-input" aria-label="预设名称" /></label>
       <label>备注<input v-model="draft.description" class="bbi-input" aria-label="预设备注" /></label>
+      <div class="ip-tabs" role="tablist" aria-label="预设编辑分类">
+        <button v-for="(tab, index) in editorTabs" :id="`ip-tab-${tab.id}`" :key="tab.id" type="button" role="tab" :aria-selected="editorTab === tab.id" :aria-controls="`ip-panel-${tab.id}`" :tabindex="editorTab === tab.id ? 0 : -1" @click="editorTab = tab.id" @keydown="tabKey($event, index)">{{ tab.label }}</button>
+      </div>
+      <div v-show="editorTab === 'content'" id="ip-panel-content" role="tabpanel" aria-labelledby="ip-tab-content">
       <div class="ip-toolbar"><strong>提示词条目 · {{ draft.entries.filter(e => e.enabled).length }} / {{ draft.entries.length }} 已开启</strong><button class="bbi-btn bbi-btn-sm" @click="addEntry"><Icon name="plus" />添加条目</button></div>
-      <input v-model="search" class="bbi-input" type="search" placeholder="搜索条目" aria-label="搜索预设条目" />
-      <select v-model="entryId" class="bbi-input" aria-label="选择预设条目">
+      <p v-if="!draft.entries.length" class="ip-muted">暂无额外画面要求</p>
+      <input v-if="draft.entries.length" v-model="search" class="bbi-input" type="search" placeholder="搜索条目" aria-label="搜索预设条目" />
+      <select v-if="draft.entries.length" v-model="entryId" class="bbi-input" aria-label="选择预设条目">
         <option v-for="item in filteredEntries" :key="item.id" :value="item.id">{{ item.enabled ? '' : '[停用] ' }}{{ item.name }}</option>
       </select>
       <div v-if="entry" class="ip-entry">
@@ -221,11 +258,18 @@ async function inspect(send: boolean): Promise<void> {
           <label>消息角色<select v-model="entry.role" class="bbi-input"><option value="system">规则（system）</option><option value="user">要求（user）</option><option value="assistant">示例回答（assistant）</option></select></label>
         </details>
       </div>
-      <details>
-        <summary>输出方式与变量</summary>
+      </div>
+      <div v-show="editorTab === 'rules'" id="ip-panel-rules" role="tabpanel" aria-labelledby="ip-tab-rules">
+        <label>适用场景<select v-model="ruleTarget" class="bbi-input" aria-label="规范适用场景"><option v-for="item in RULE_TARGETS" :key="item.value" :value="item.value">{{ item.label }}{{ item.value === effectiveTarget.value ? '（当前）' : '' }}</option></select></label>
+        <template v-if="draft.rules">
+          <PresetRuleEditor :key="target.spec" :rule="draft.rules[target.spec]" :rule-key="target.spec" title="书写规范" />
+          <PresetRuleEditor :key="target.check" :rule="draft.rules[target.check]" :rule-key="target.check" title="检查指导" />
+        </template>
+      </div>
+      <div v-show="editorTab === 'advanced'" id="ip-panel-advanced" role="tabpanel" aria-labelledby="ip-tab-advanced">
         <label>输出方式<select v-model="draft.output" class="bbi-input" aria-label="预设输出方式"><option value="text">普通文本 · JSON 计划</option><option value="tool">工具输出 · 需要支持工具的副 API</option></select></label>
-        <label class="ip-check"><input v-model="draft.useBackendRules" type="checkbox" />附加当前后端的提示词规范</label>
-        <div class="ip-muted">图片位置、数量和漫画格式：由插件统一校验</div>
+        <label>工作流提示词格式<select :value="draft.format ?? 'auto'" class="bbi-input" aria-label="工作流提示词格式" @change="draft.format = ($event.target as HTMLSelectElement).value as 'auto' | 'moss_layout'"><option value="auto">跟随后端与漫画开关</option><option value="moss_layout">MOSS 原生 Layout</option></select></label>
+        <PresetRuleEditor v-if="draft.rules" :rule="draft.rules.jailbreak" rule-key="jailbreak" title="通用前置规则" />
         <div v-for="(variable, index) in variables" :key="index" class="ip-variable">
           <input v-model="variable.name" class="bbi-input" placeholder="变量名" :aria-label="`变量名 ${index + 1}`" />
           <textarea v-model="variable.value" class="bbi-input" rows="2" placeholder="变量内容" :aria-label="`变量值 ${index + 1}`" />
@@ -233,7 +277,7 @@ async function inspect(send: boolean): Promise<void> {
         </div>
         <button class="bbi-btn bbi-btn-sm" @click="variables.push({ name: '', value: '' })"><Icon name="plus" />添加变量</button>
         <details><summary>可用内容变量</summary><dl class="ip-variables"><template v-for="[key, label] in PRESET_VARIABLES" :key="key"><dt>{{ '{' + '{' + key + '}' + '}' }}</dt><dd>{{ label }}</dd></template></dl></details>
-      </details>
+      </div>
       <div class="ip-toolbar ip-actions">
         <button class="bbi-btn bbi-btn-primary" @click="save"><Icon name="check" />保存预设</button>
         <button class="bbi-btn" @click="draft = undefined; error = ''">取消</button>
@@ -284,6 +328,13 @@ async function inspect(send: boolean): Promise<void> {
 .ip-status { color: var(--bbi-accent, #2d9180); }
 .ip-muted { opacity: .72; font-size: 12px; }
 .ip-text { resize: vertical; min-height: 150px; }
+.ip-effective { border-block: 1px solid var(--bbi-line); padding: 10px 0; font-size: 12px; }
+.ip-effective dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 6px; margin: 10px 0 0; }
+.ip-effective dt { color: var(--bbi-ink-muted); }
+.ip-effective dd { margin: 0; overflow-wrap: anywhere; }
+.ip-tabs { display: flex; border-bottom: 1px solid var(--bbi-line); margin: 12px 0; }
+.ip-tabs button { flex: 1; border: 0; background: transparent; color: var(--bbi-ink-muted); padding: 10px 4px; cursor: pointer; font: inherit; border-bottom: 2px solid transparent; }
+.ip-tabs button[aria-selected=true] { color: var(--bbi-accent); border-bottom-color: var(--bbi-accent); font-weight: 600; }
 .ip-up { transform: rotate(-90deg); }
 .ip-down { transform: rotate(90deg); }
 .ip-variable { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(100px, 2fr) 32px; gap: 6px; align-items: start; margin: 8px 0; }

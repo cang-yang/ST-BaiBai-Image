@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { exportPreset, importPresets, newImagePreset, newPromptEntry, normalizeImagePresets, presetDefaults, snapshotPreset, validatePreset } from './model';
+import { exportPreset, importPresets, newImagePreset, newPromptEntry, normalizeImagePresets, presetDefaults, presetWithMangaRules, snapshotPreset, validatePreset } from './model';
 import { assertPresetReady, renderPreset } from './render';
 
 describe('native image presets', () => {
@@ -57,6 +57,79 @@ describe('native image presets', () => {
     expect(normalizeImagePresets({ ...config, activeId: 'missing' }).activeId).toBe('');
     expect(() => snapshotPreset({ ...config, activeId: 'missing' })).toThrow();
     expect(() => validatePreset({ ...preset, entries: [preset.entries[0], preset.entries[0]] })).toThrow(/重复/);
+  });
+  it('migrates global text once, preserving the former default as an independent active preset', () => {
+    const old = { comfySpec: 'OLD_SPEC', comfyThinking: 'OLD_CHECK', jailbreak: 'OLD_PREFIX' };
+    const migrated = normalizeImagePresets(undefined, old, { spec: 'MANGA_SPEC', thinking: 'MANGA_CHECK' });
+    expect(migrated.rulesVersion).toBe(2);
+    expect(migrated.presets).toHaveLength(1);
+    const preset = snapshotPreset(migrated)!;
+    expect(preset.name).toBe('原有提示词（已迁移）');
+    expect(preset.entries).toEqual([]);
+    expect(preset.rules).toMatchObject({
+      comfySpec: { mode: 'custom', text: 'OLD_SPEC' },
+      comfyThinking: { mode: 'custom', text: 'OLD_CHECK' },
+      jailbreak: { mode: 'custom', text: 'OLD_PREFIX' },
+      mangaSpec: { mode: 'custom', text: 'MANGA_SPEC' },
+      mangaThinking: { mode: 'custom', text: 'MANGA_CHECK' },
+    });
+    old.comfySpec = 'CHANGED_BACKUP';
+    expect(normalizeImagePresets(migrated, old)).toEqual(migrated);
+    expect(normalizeImagePresets(undefined, {})).toEqual({ ...presetDefaults(), rulesVersion: 2 });
+  });
+  it('snapshots v1 inheritance without changing the active choice or disabled rules', () => {
+    const legacy = { ...newImagePreset(), rules: undefined, useBackendRules: false };
+    const input = { activeId: legacy.id, presets: [legacy], directChannels: ['direct'] };
+    const result = normalizeImagePresets(input, { comfySpec: '[BBI_FORMAT:MOSS_LAYOUT]\nOLD' }, { spec: 'MANGA' });
+    expect(result.activeId).toBe(legacy.id);
+    expect(result.presets).toHaveLength(2);
+    expect(result.presets[0]).toMatchObject({ format: 'moss_layout', rules: {
+      comfySpec: { mode: 'off' }, mangaSpec: { mode: 'custom', text: 'MANGA' }, jailbreak: { mode: 'off' },
+    } });
+    expect(result.presets[0].useBackendRules).toBeUndefined();
+    expect(legacy.rules).toBeUndefined();
+    expect(result.directChannels).toEqual(['direct']);
+  });
+  it('owns imported rules immediately, so reloading cannot inherit legacy global text', () => {
+    for (const raw of [
+      { format: 'baibai_image_prompt_preset', version: 1, preset: { entries: [], useBackendRules: true } },
+      [{ role: 'system', content: 'REQUIREMENT' }],
+      { entries: [{ role: 'user', content: 'REQUIREMENT' }] },
+      { sample: { entries: [{ role: 'user', content: 'REQUIREMENT', triggerMode: 'always' }] } },
+    ]) {
+      const [preset] = importPresets(JSON.stringify(raw));
+      expect(preset.rules?.comfySpec.mode).toBe('builtin');
+      const reloaded = normalizeImagePresets({ ...presetDefaults(), rulesVersion: 2, presets: [preset] }, { comfySpec: 'SHOULD_NOT_INHERIT' });
+      expect(reloaded.presets[0].rules).toEqual(preset.rules);
+      expect(JSON.stringify(reloaded)).not.toContain('SHOULD_NOT_INHERIT');
+    }
+  });
+  it('roundtrips v2 custom and disabled rules and rejects invalid rule blocks', () => {
+    const preset = newImagePreset();
+    preset.format = 'moss_layout';
+    preset.rules!.comfySpec = { mode: 'custom', text: 'MY_SPEC' };
+    preset.rules!.mangaThinking = { mode: 'off', text: 'PRESERVED_DRAFT' };
+    const exported = JSON.parse(exportPreset(preset));
+    expect(exported.version).toBe(2);
+    expect(exported.preset.useBackendRules).toBeUndefined();
+    expect(importPresets(JSON.stringify(exported))[0]).toMatchObject({ format: 'moss_layout', rules: preset.rules });
+    for (const invalid of [null, { comfySpec: { mode: 'inherit', text: '' } }, { comfySpec: { mode: 'custom', text: 1 } }]) {
+      expect(() => importPresets(JSON.stringify({ ...exported, preset: { ...exported.preset, rules: invalid } }))).toThrow();
+    }
+  });
+  it('adds a manga bundle as a separate preset while preserving its base and ordinary rules', () => {
+    const base = newImagePreset();
+    base.rules!.comfySpec = { mode: 'custom', text: 'ORDINARY' };
+    const before = JSON.stringify(base);
+    const manga = presetWithMangaRules(base, 'Workflow', { spec: 'MANGA', thinking: 'CHECK' });
+    expect(manga.id).not.toBe(base.id);
+    expect(manga).toMatchObject({ name: 'Workflow · 漫画', format: 'moss_layout', rules: {
+      comfySpec: { mode: 'custom', text: 'ORDINARY' },
+      mangaSpec: { mode: 'custom', text: 'MANGA' }, mangaThinking: { mode: 'custom', text: 'CHECK' },
+    } });
+    expect(JSON.stringify(base)).toBe(before);
+    manga.rules!.comfySpec.text = 'CHANGED';
+    expect(base.rules!.comfySpec.text).toBe('ORDINARY');
   });
 });
 

@@ -1,5 +1,6 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { snapshotPreset } from '@/presets/model';
+import { builtinImagePreset } from '@/presets/catalog';
 import { dshChatId, requestDshCompletion, type DshOperation } from '@/api/dsh';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
@@ -319,10 +320,11 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const imagePlanTool = preset?.output === 'tool';
     const dshOn = promptOptions.dshSession === true;
     if (imagePlanTool && !channel) throw new Error('工具输出需要在“生成 tag 使用”中指派独立副 API 渠道。');
-    if (dshOn && (preset || direct)) throw new Error('自定义配图预设或浏览器直连暂不能与 DSH 持久会话同时使用，请关闭 DSH。');
+    if (dshOn && (preset?.entries.some(e => e.enabled && e.content.trim()) || imagePlanTool || direct)) throw new Error('含自定义条目、工具输出或浏览器直连的预设暂不能与 DSH 持久会话同时使用，请关闭 DSH。');
     if (dshOn && !channel) throw new Error('DSH 持久会话需要先为“生成 tag 使用”指派独立副 API 渠道。');
     // 协议形态开跑时快照一次:写协议、验收与收尾同一份,用户中途拨开关也不会前后不一
-    const profile = autoTagProfile();
+    const effectivePreset = preset ?? builtinImagePreset();
+    const profile = autoTagProfile(effectivePreset);
     const messages = await buildAutoTagMessages(
       context,
       floor,
@@ -332,7 +334,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       anchors.text,
       slot ? buildSlotTaskNote(rawSource, slot.seq) : '',
       profile,
-      preset,
+      effectivePreset,
     );
     const dshOperation: DshOperation = {};
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
@@ -733,7 +735,8 @@ export function bindAutoTagging(): void {
 export async function controlDshSession(action: 'sync_rules' | 'reset'): Promise<string> {
   const context=getContext(), channel=getTagGenChannel();
   if (!settings.autoTag.dshSession || !channel) throw new Error('请启用 DSH 持久会话并指派副 API 渠道。');
-  if (settings.imagePresets.activeId || settings.imagePresets.directChannels.includes(channel.id)) throw new Error('自定义配图预设或浏览器直连暂不能与 DSH 持久会话同时使用。');
+  const preset = snapshotPreset(settings.imagePresets) ?? builtinImagePreset();
+  if (preset.entries.some(e => e.enabled && e.content.trim()) || preset.output === 'tool' || settings.imagePresets.directChannels.includes(channel.id)) throw new Error('含自定义条目、工具输出或浏览器直连的预设暂不能与 DSH 持久会话同时使用。');
   if (!context?.getCurrentChatId()) throw new Error('请先打开一个酒馆聊天。');
   const expectedChatId=dshChatId(context);
   let messages: Awaited<ReturnType<typeof buildAutoTagMessages>>=[];
@@ -741,7 +744,7 @@ export async function controlDshSession(action: 'sync_rules' | 'reset'): Promise
     const floor=context.chat.findLastIndex(message=>typeof message.mes==='string' && !!message.mes.trim());
     if (floor<0) throw new Error('当前聊天还没有正文，请先发送一条消息。');
     const anchors=resolveCharAnchors(charTagsBeforeFloor(floor),lockedCharTagNames());
-    messages=await buildAutoTagMessages(context,floor,settings.autoTag,readBookMemory(floor,context.chat[floor].mes,context.name1),undefined,anchors.text);
+    messages=await buildAutoTagMessages(context,floor,settings.autoTag,readBookMemory(floor,context.chat[floor].mes,context.name1),undefined,anchors.text,'',autoTagProfile(preset),preset);
   }
   return requestDshCompletion(channel,messages,context,{action,expectedChatId,source:action==='reset'?'DSH 重建会话':'DSH 手动发送固定规范'});
 }

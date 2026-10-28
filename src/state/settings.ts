@@ -1855,7 +1855,7 @@ function normalize(raw: unknown): ImageSettings {
   };
   merged.manga = normalizeManga(r.manga);
   merged.imageWorldbooks = normalizeImageWorldbooks(r.imageWorldbooks);
-  merged.imagePresets = normalizeImagePresets(r.imagePresets);
+  merged.imagePresets = normalizeImagePresets(r.imagePresets, merged.autoTag.prompts, merged.manga);
   return merged;
 }
 

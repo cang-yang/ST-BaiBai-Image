@@ -1,4 +1,5 @@
 import type { ChatMsg } from '@/api/client';
+import { defaultRules, legacyRules, readRules, type PresetRules, type RuleKey } from './rules';
 
 export interface PromptEntry {
   id: string;
@@ -16,7 +17,10 @@ export interface ImagePromptPreset {
   name: string;
   description: string;
   output: 'text' | 'tool';
-  useBackendRules: boolean;
+  format?: 'auto' | 'moss_layout';
+  /** v1 import compatibility only; v2 uses independently owned rules. */
+  useBackendRules?: boolean;
+  rules?: PresetRules;
   entries: PromptEntry[];
   variables: Record<string, string>;
   warnings: string[];
@@ -27,6 +31,7 @@ export interface ImagePresetSettings {
   presets: ImagePromptPreset[];
   /** Plugin-local: shared API channel normalization must not erase this preference. */
   directChannels: string[];
+  rulesVersion?: 2;
 }
 
 export const PRESET_FORMAT = 'baibai_image_prompt_preset';
@@ -47,7 +52,7 @@ export function newPromptEntry(): PromptEntry {
 
 export function newImagePreset(): ImagePromptPreset {
   return {
-    id: id(), name: '我的正文配图', description: '', output: 'text', useBackendRules: true,
+    id: id(), name: '我的正文配图', description: '', output: 'text', rules: defaultRules(),
     entries: [{ ...newPromptEntry(), name: '画面要求', content: '忠于正文，保持人物外貌与场景连续。优先选择有明确主体、动作和情绪的画面。' }],
     variables: {}, warnings: [],
   };
@@ -69,6 +74,7 @@ function readPreset(raw: unknown, freshIds: boolean): ImagePromptPreset {
   });
   if (new Set(entries.map(e => e.id)).size !== entries.length) throw new Error('条目 ID 重复');
   if (raw.output !== undefined && !['text', 'tool'].includes(raw.output)) throw new Error('不支持的输出方式');
+  if (raw.format !== undefined && !['auto', 'moss_layout'].includes(raw.format)) throw new Error('不支持的提示词格式');
   const variables: Record<string, string> = Object.create(null);
   if (raw.variables !== undefined && !record(raw.variables)) throw new Error('变量必须是名称与文本组成的对象');
   for (const [key, value] of Object.entries(raw.variables ?? {})) {
@@ -79,7 +85,10 @@ function readPreset(raw: unknown, freshIds: boolean): ImagePromptPreset {
   return {
     id: freshIds ? id() : text(raw.id) || id(), name: text(raw.name).trim() || '未命名预设',
     description: text(raw.description), output: raw.output === 'tool' ? 'tool' : 'text',
-    useBackendRules: raw.useBackendRules !== false, entries, variables,
+    ...(raw.format ? { format: raw.format } : {}),
+    ...(raw.rules !== undefined ? { rules: readRules(raw.rules) }
+      : freshIds ? { rules: legacyRules({}, {}, raw.useBackendRules !== false) }
+      : { useBackendRules: raw.useBackendRules !== false }), entries, variables,
     warnings: Array.isArray(raw.warnings) ? raw.warnings.filter((v: unknown) => typeof v === 'string').slice(0, 50) : [],
   };
 }
@@ -89,19 +98,41 @@ export function validatePreset(raw: unknown): ImagePromptPreset {
   return readPreset(raw, false);
 }
 
-export function normalizeImagePresets(raw: unknown): ImagePresetSettings {
-  if (!record(raw)) return presetDefaults();
+export function normalizeImagePresets(
+  raw: unknown,
+  oldPrompts?: Partial<Record<RuleKey, string>>,
+  oldManga: { spec?: string; thinking?: string } = {},
+): ImagePresetSettings {
+  if (!record(raw)) raw = presetDefaults();
+  const input = raw as Record<string, any>;
   const presets: ImagePromptPreset[] = [];
-  for (const item of Array.isArray(raw.presets) ? raw.presets : []) {
+  for (const item of Array.isArray(input.presets) ? input.presets : []) {
     try {
       const preset = validatePreset(item);
+      if (!preset.rules && oldPrompts) {
+        preset.rules = legacyRules(oldPrompts, oldManga, preset.useBackendRules !== false);
+        if (oldPrompts.comfySpec?.includes('[BBI_FORMAT:MOSS_LAYOUT]')) preset.format = 'moss_layout';
+        delete preset.useBackendRules;
+      }
       if (presets.some(p => p.id === preset.id)) preset.id = id();
       presets.push(preset);
     } catch { /* Preserve other valid presets if one saved record is corrupt. */ }
   }
+  let activeId = presets.some(p => p.id === input.activeId) ? input.activeId : '';
+  if (oldPrompts && input.rulesVersion !== 2 &&
+      [...Object.values(oldPrompts), oldManga.spec, oldManga.thinking].some(value => value?.trim())) {
+    const migrated = newImagePreset();
+    migrated.name = '原有提示词（已迁移）';
+    migrated.description = '升级前的自定义提示词与漫画规范，已独立保存。';
+    migrated.entries = [];
+    migrated.rules = legacyRules(oldPrompts, oldManga, true, true);
+    presets.push(migrated);
+    if (!activeId) activeId = migrated.id;
+  }
   return {
-    activeId: presets.some(p => p.id === raw.activeId) ? raw.activeId : '', presets,
-    directChannels: Array.isArray(raw.directChannels) ? [...new Set(raw.directChannels.filter((v: unknown): v is string => typeof v === 'string'))] as string[] : [],
+    activeId, presets,
+    directChannels: Array.isArray(input.directChannels) ? [...new Set(input.directChannels.filter((v: unknown): v is string => typeof v === 'string'))] as string[] : [],
+    ...(oldPrompts || input.rulesVersion === 2 ? { rulesVersion: 2 as const } : {}),
   };
 }
 
@@ -114,8 +145,18 @@ export function snapshotPreset(config: ImagePresetSettings): ImagePromptPreset |
 
 export function exportPreset(preset: ImagePromptPreset): string {
   // Explicit allowlist: no channel, key, host settings or unrelated request profiles.
-  const { name, description, output, useBackendRules, entries, variables, warnings } = validatePreset(preset);
-  return JSON.stringify({ format: PRESET_FORMAT, version: 1, preset: { name, description, output, useBackendRules, entries, variables, warnings } }, null, 2);
+  const { name, description, output, format, useBackendRules, entries, variables, warnings, rules } = validatePreset(preset);
+  return JSON.stringify({ format: PRESET_FORMAT, version: 2, preset: { name, description, output, ...(format ? { format } : {}), rules: rules ?? legacyRules({}, {}, useBackendRules !== false), entries, variables, warnings } }, null, 2);
+}
+
+export function presetWithMangaRules(base: ImagePromptPreset, name: string, bundle: { spec: string; thinking: string }): ImagePromptPreset {
+  const copy = importPresets(exportPreset(base))[0];
+  copy.name = `${name} · 漫画`;
+  copy.description = '工作流附带的漫画规范，独立保存于此预设。';
+  copy.format = 'moss_layout';
+  copy.rules!.mangaSpec = bundle.spec.trim() ? { mode: 'custom', text: bundle.spec } : { mode: 'builtin', text: '' };
+  copy.rules!.mangaThinking = bundle.thinking.trim() ? { mode: 'custom', text: bundle.thinking } : { mode: 'builtin', text: '' };
+  return validatePreset(copy);
 }
 
 function fromLegacy(name: string, raw: unknown): ImagePromptPreset {
@@ -140,8 +181,9 @@ export function importPresets(json: string, filename = '导入预设'): ImagePro
   let raw: unknown;
   try { raw = JSON.parse(json); } catch { throw new Error('文件不是有效的 JSON'); }
   if (record(raw) && raw.format === PRESET_FORMAT) {
-    if (raw.version !== 1) throw new Error(`不支持的预设版本 ${raw.version}`);
-    return [readPreset(raw.preset, true)];
+    if (raw.version !== 1 && raw.version !== 2) throw new Error(`不支持的预设版本 ${raw.version}`);
+    if (raw.version === 2 && !record(raw.preset?.rules)) throw new Error('v2 预设缺少独立书写规范');
+    return [readPreset({ ...raw.preset, rules: raw.preset?.rules ?? legacyRules({}, {}, raw.preset?.useBackendRules !== false) }, true)];
   }
   if (record(raw) && raw.type === 'st_chatu8_request_type_profile') {
     const name = raw.request_type_profile?.image_gen?.context_profile;

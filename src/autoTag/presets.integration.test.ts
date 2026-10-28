@@ -43,6 +43,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('preset runner integration', () => {
+  it('passes an explicit owned builtin preset when the user selects the default', async () => {
+    settings.imagePresets.activeId = '';
+    await requestFloorTags(0);
+    expect(mock.build).toHaveBeenCalledOnce();
+    expect(mock.build.mock.calls[0][8]).toMatchObject({
+      name: '内置默认', entries: [], rules: { comfySpec: { mode: 'builtin' } },
+    });
+    expect(mock.request.mock.calls[0][2].imagePlanTool).toBeFalsy();
+  });
   it('snapshots preset, channel and transport before asynchronous prompt assembly', async () => {
     const name = settings.imagePresets.presets[0].name;
     mock.build.mockImplementationOnce(async (...args: any[]) => {
