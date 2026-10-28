@@ -20,6 +20,7 @@ import {
 import { getContext } from '@/st/context';
 import { mangaDefaults, normalizeManga, type MangaSettings } from '@/manga/layouts';
 import { reactive, watch } from 'vue';
+import { newRunningHubPreset, normalizeRunningHub, runningHubDefaults, type RunningHubSettings } from '@/backends/runninghubConfig';
 
 /**
  * 柏宝绘设置(全局,跨聊天)。存进 ST 的 extension_settings(→ 服务器 settings.json),
@@ -28,11 +29,12 @@ import { reactive, watch } from 'vue';
  */
 
 /** 生图后端 */
-export type BackendId = 'webui' | 'comfyui' | 'nai';
+export type BackendId = 'webui' | 'comfyui' | 'nai' | 'runninghub';
 // 顺序即展示顺序(渠道页页签 / 设置页出图后端下拉):NAI 用户最多,排最前;webui 隐藏但保留。
 export const BACKENDS: { value: BackendId; label: string }[] = [
   { value: 'nai', label: 'NAI' },
   { value: 'comfyui', label: 'ComfyUI' },
+  { value: 'runninghub', label: 'RunningHub' },
   { value: 'webui', label: 'WebUI' },
 ];
 
@@ -1034,6 +1036,7 @@ export interface ImageSettings {
   /** 后端连接配置 */
   webui: BackendConn;
   comfyui: ComfyUISettings;
+  runninghub: RunningHubSettings;
   nai: NaiSettings;
   /** 副 API 渠道列表(镜像共享存储;真身在 extensionSettings['baibai_api_channels']) */
   channels: ApiChannel[];
@@ -1190,6 +1193,7 @@ function defaults(): ImageSettings {
     defaultBackend: 'comfyui',
     webui: backendDefaults('http://127.0.0.1:7860'),
     comfyui: comfyDefaults(),
+    runninghub: runningHubDefaults(),
     nai: naiDefaults(),
     channels: [],
     assignments: { tagGen: '' },
@@ -1279,6 +1283,15 @@ export function activeComfyPreset(): ComfyWorkflowPreset {
   return list.find(w => w.id === settings.comfyui.activeWorkflowId) ?? list[0] ?? newComfyWorkflow();
 }
 
+export function activeRunningHubPreset() {
+  const config = settings.runninghub;
+  return config.workflows.find(w => w.id === config.activeWorkflowId) ?? config.workflows[0] ?? newRunningHubPreset();
+}
+
+export function isWorkflowBackend(): boolean {
+  return settings.defaultBackend === 'comfyui' || settings.defaultBackend === 'runninghub';
+}
+
 /** 画幅锁选项(顺序即分段按钮顺序);NAI 渠道与 ComfyUI 每套工作流的面板共用这一份。 */
 export const ORIENTATION_LOCKS: { value: OrientationLock; label: string }[] = [
   { value: 'auto', label: '自动' },
@@ -1294,6 +1307,7 @@ export const ORIENTATION_LOCKS: { value: OrientationLock; label: string }[] = [
  * 同样刻意只读不写(在 computed 里被调用)。
  */
 export function activeOrientationLock(): OrientationLock {
+  if (settings.defaultBackend === 'runninghub') return activeRunningHubPreset().orientationLock;
   if (settings.defaultBackend === 'nai') return settings.nai.orientationLock;
   if (settings.defaultBackend === 'comfyui') return activeComfyPreset().orientationLock;
   return 'auto';
@@ -1766,11 +1780,12 @@ function normalize(raw: unknown): ImageSettings {
   };
   // webui 已隐藏:存量数据里的 'webui' 一律迁移到默认后端(否则规范/出图口径会落空)
   merged.defaultBackend =
-    merged.defaultBackend === 'comfyui' || merged.defaultBackend === 'nai'
+    merged.defaultBackend === 'comfyui' || merged.defaultBackend === 'nai' || merged.defaultBackend === 'runninghub'
       ? merged.defaultBackend
       : d.defaultBackend;
   merged.webui = normalizeBackend(r.webui, d.webui);
   merged.comfyui = normalizeComfyUI(r.comfyui, d.comfyui);
+  merged.runninghub = normalizeRunningHub(r.runninghub);
   merged.nai = normalizeNai(r.nai, d.nai);
   // 副 API 渠道:逐个补全字段并校验类型
   merged.channels = (Array.isArray(r.channels) ? r.channels : []).map(normalizeChannel);
@@ -1856,6 +1871,7 @@ function applyInto(target: ImageSettings, src: ImageSettings): void {
   target.defaultBackend = src.defaultBackend;
   target.webui = src.webui;
   target.comfyui = src.comfyui;
+  target.runninghub = src.runninghub;
   target.nai = src.nai;
   target.channels = src.channels;
   target.assignments = src.assignments;

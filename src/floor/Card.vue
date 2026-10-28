@@ -35,7 +35,7 @@ import {
 } from '@/floor/storage';
 import { isTagPlanning } from '@/floor/tagPlanState';
 import { formatGenerationMeta } from '@/generationMeta';
-import { activeComfyPreset, activeOrientationLock, imageDisplayMaxHeight, settings } from '@/state/settings';
+import { activeComfyPreset, activeRunningHubPreset, activeOrientationLock, imageDisplayMaxHeight, settings } from '@/state/settings';
 import { beginImage, failImage, finishImage, safeHistory } from '@/state/history';
 import { copyText } from '@/st/clipboard';
 import { getContext } from '@/st/context';
@@ -150,6 +150,7 @@ const retryInfo = computed(() => record.value?.retry ?? null);
 
 const comfyActive = computed(() => settings.defaultBackend === 'comfyui');
 const naiActive = computed(() => settings.defaultBackend === 'nai');
+const runningHubActive = computed(() => settings.defaultBackend === 'runninghub');
 /**
  * 后端是否已配齐(决定给「生成图片」按钮还是配置引导)。
  * 判据在 generate.ts 的 backendStatus 里,与真正出图、与公开接口同源——
@@ -249,6 +250,7 @@ const barText = computed(() => {
 
 /** 无图且后端未就绪时,占位区中央的配置引导。 */
 const pendingHint = computed(() => {
+  if (runningHubActive.value) return backendStatus().reason || '请到柏宝绘「渠道」页配置 RunningHub';
   if (!comfyActive.value && !naiActive.value)
     return '出图后端未选择,请到柏宝绘「渠道」页选择出图渠道';
   return naiActive.value
@@ -286,8 +288,8 @@ async function generate(): Promise<void> {
     // 且图随后就落盘进 ST 了)——只留元信息 + 楼层坐标,够回溯「这张图是怎么来的」。
     historyId = safeHistory(() =>
       beginImage({
-        backend: naiActive.value ? 'nai' : 'comfyui',
-        model: naiActive.value ? settings.nai.model : activeComfyPreset().name,
+        backend: runningHubActive.value ? 'runninghub' : naiActive.value ? 'nai' : 'comfyui',
+        model: runningHubActive.value ? activeRunningHubPreset().name : naiActive.value ? settings.nai.model : activeComfyPreset().name,
         prompt: job.prompt,
         nl: job.nl,
         negative: job.negative,
@@ -301,6 +303,7 @@ async function generate(): Promise<void> {
     // 闸门、后端分派都在 generateImage 里(公开接口走同一条路,见 generate.ts);
     // 本组件只把进度回调接到自己的槽位运行态上。
     const { result, meta } = await generateImage({ ...job, seed }, signal, {
+      onPhase: phase => setGenPhase(slot, token, phase),
       onStart: () => setGenPhase(slot, token, 'generating'),
       onQueue: ahead => setQueueAhead(slot, token, ahead),
       onRetry: retry => setGenRetry(slot, token, retry),

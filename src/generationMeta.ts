@@ -44,6 +44,10 @@ export interface GenerationVibe {
  * 展示更直观；真正要复现的还是整台配方，不在协议字段名上抠。
  */
 export interface GenerationParams {
+  workflowId?: string;
+  taskId?: string;
+  coins?: number;
+  seconds?: number;
   /** ComfyUI：simple / custom；NAI 无此键。 */
   mode?: string;
   /** ComfyUI 简易模板 id（checkpoint / flux / anima / moss）。 */
@@ -78,7 +82,7 @@ export interface GenerationParams {
 
 /** 随图落盘的完整出图元信息。 */
 export interface GenerationMeta {
-  backend: 'nai' | 'comfyui';
+  backend: 'nai' | 'comfyui' | 'runninghub';
   /** NAI 模型名 / ComfyUI 工作流预设名。vibe 编码按模型分组，必须一起记。 */
   model: string;
   /** 实际发给后端的画幅像素；0 = 由工作流自带尺寸（ComfyUI 未解析出时）。 */
@@ -136,6 +140,10 @@ export function formatGenerationMeta(meta: GenerationMeta): string {
   }
 
   const p = meta.params;
+  if (p.workflowId) lines.push(`云端工作流: ${p.workflowId}`);
+  if (p.taskId) lines.push(`任务 ID: ${p.taskId}`);
+  if (p.coins !== undefined) lines.push(`费用: ${p.coins} RH`);
+  if (p.seconds !== undefined) lines.push(`云端耗时: ${p.seconds} 秒`);
   const sampling: string[] = [];
   if (p.template) sampling.push(`模板 ${p.template}`);
   if (p.baseModel) sampling.push(`底模 ${p.baseModel}`);

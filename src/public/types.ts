@@ -120,7 +120,7 @@ export interface GenerateRequest {
   nl?: string;
   /**
    * 本画面的动态负面(可空)。
-   * 只对 ComfyUI 生效(填进工作流的 %negative_prompt%);NAI 的负面取用户渠道配置。
+   * 对 ComfyUI / RunningHub 生效(填进工作流的 %negative_prompt%);NAI 的负面取用户渠道配置。
    */
   negative?: string;
   /**
@@ -159,7 +159,7 @@ export interface GenerateOptions {
 
 export interface PublicGenerateProgress {
   /**
-   * - 'queued'     在柏宝绘的 NAI 并发闸门里排队(等别的请求让出槽位)
+   * - 'queued'     本地并发等待，或 RunningHub 云端排队
    * - 'generating' 请求已发出,后端正在画
    * - 'queued-remote' 在 ComfyUI **服务端**队列里(ahead 为前面还有几个)
    * - 'retrying'   被限流了,正在退避重试(attempt/max)

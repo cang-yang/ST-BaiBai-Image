@@ -263,6 +263,7 @@ export async function generate(
   let output;
   try {
     output = await generateImage({ prompt, nl, negative, characters, size, seed }, signal, {
+      onPhase: phase => report({ phase }),
       onStart: () => report({ phase: 'generating' }),
       onQueue: ahead => report({ phase: 'queued-remote', ahead }),
       onRetry: retry =>

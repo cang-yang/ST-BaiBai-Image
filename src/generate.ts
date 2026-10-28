@@ -31,6 +31,9 @@ import { acquireNaiSlot } from '@/floor/genQueue';
 import type { GenerationMeta } from '@/generationMeta';
 import { activeComfyPreset, activeNaiEndpoint, activeOrientationLock, effectiveComfyConn, effectiveNai, settings, type BackendId } from '@/state/settings';
 import { applyMangaFrames } from '@/manga/layouts';
+import { generateRunningHubImage } from '@/backends/runninghub';
+import { validateRunningHubWorkflow } from '@/backends/runninghubWorkflow';
+import { activeRunningHubPreset } from '@/state/settings';
 
 /** 一次生成的输入。与协议层 ImageInsertion 同形,但不含正文位置信息。 */
 export interface GenerateInput {
@@ -53,6 +56,7 @@ export interface GenerateInput {
 
 /** 生成过程中的进度上报(卡片用它显示排队位置与退避进度)。 */
 export interface GenerateProgress {
+  onPhase?: (phase: 'queued' | 'generating') => void;
   /** 已取得闸门槽位、请求即将发出(NAI 从「排队中」进入「生成中」的时机)。 */
   onStart?: () => void;
   /** ComfyUI 服务端队列里前面还有几个;null = 未知。 */
@@ -102,6 +106,12 @@ export interface BackendStatus {
  */
 export function backendStatus(): BackendStatus {
   const backend = settings.defaultBackend;
+
+  if (backend === 'runninghub') {
+    const preset = activeRunningHubPreset();
+    const reason = !settings.runninghub.apiKey.trim() ? '未填写 RunningHub API Key' : validateRunningHubWorkflow(preset);
+    return { backend, configured: !reason, model: preset.name, supportsCharacters: false, reason };
+  }
 
   if (backend === 'nai') {
     const model = settings.nai.model;
@@ -208,6 +218,24 @@ export async function generateImage(
       );
       result = output.result;
       meta = { backend: 'nai', model: status.model, ...output.usage };
+    } else if (status.backend === 'runninghub') {
+      const config = { ...settings.runninghub };
+      const preset = { ...activeRunningHubPreset() };
+      const px = parseSize(pickSize(preset, size));
+      const prompt = applyMangaFrames(input.prompt, settings.manga, px);
+      const output = await generateRunningHubImage(
+        config, preset,
+        { prompt, nl: prompt !== input.prompt ? '' : input.nl ?? '', negative_prompt: input.negative ?? '',
+          seed: input.seed, width: px?.width, height: px?.height },
+        signal,
+        { onPhase: phase => progress.onPhase?.(phase === 'waiting' || phase === 'queued' ? 'queued' : 'generating') },
+      );
+      result = output.result;
+      meta = {
+        backend: 'runninghub', model: preset.name, width: px?.width ?? 0, height: px?.height ?? 0,
+        positive: '', negative: '', artist: null, vibes: [],
+        params: { mode: 'cloud', workflowId: preset.workflowId, taskId: output.taskId, coins: output.coins, seconds: output.seconds },
+      };
     } else {
       const conn = effectiveComfyConn();
       // 漫画 Layout:模型只写 panel/slot,这里按当前画布查表换成整数框;关闭漫画模式时原样返回。

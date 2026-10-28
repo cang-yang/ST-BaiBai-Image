@@ -1,6 +1,7 @@
 import type { ChatMsg } from '@/api/client';
 import { templateSupportsNegative } from '@/backends/comfyTemplates';
 import { getWorkflowPlaceholders } from '@/backends/comfyui';
+import { runningHubPlaceholders } from '@/backends/runninghubWorkflow';
 import { naiSupportsCharacterPrompts } from '@/backends/nai';
 import type { Orientation } from '@/backends/size';
 import {
@@ -21,6 +22,8 @@ import { isAiStoryMessage, isStoryMessage, type STContext } from '@/st/context';
 import type { AutoTagSettings } from '@/state/settings';
 import {
   activeComfyPreset,
+  activeRunningHubPreset,
+  isWorkflowBackend,
   activeOrientationLock,
   DEFAULT_COMFY_NL_SPEC,
   DEFAULT_COMFY_SPEC,
@@ -54,11 +57,11 @@ export interface AutoTagProfile {
 
 export function autoTagProfile(): AutoTagProfile {
   const backend = settings.defaultBackend;
-  const layout = backend === 'comfyui' && (settings.manga.enabled || usesMossLayout(settings.autoTag.prompts?.comfySpec));
+  const layout = isWorkflowBackend() && (settings.manga.enabled || usesMossLayout(settings.autoTag.prompts?.comfySpec));
   const naiCharPrompts = backend === 'nai' && naiSupportsCharacterPrompts(settings.nai.model);
   // 两项都取自同一个当前预设 / 渠道:切工作流即同时切走自然语言与画幅锁的口径
   const nl = !layout && (
-    backend === 'comfyui'
+    backend === 'runninghub' ? activeRunningHubPreset().naturalLanguage : backend === 'comfyui'
       ? activeComfyPreset().naturalLanguage
       : naiCharPrompts && settings.nai.naturalLanguage);
   const lock = activeOrientationLock();
@@ -93,7 +96,7 @@ export function expandNlSections(text: string, nlOn: boolean): string {
  * 两个后端都先展开自然语言条件段(expandNlSections)。
  */
 function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromptsOn: boolean): string {
-  if (settings.defaultBackend === 'comfyui') {
+  if (isWorkflowBackend()) {
     const template = expandNlSections(((options.prompts?.comfySpec ?? '').trim() || DEFAULT_COMFY_SPEC).replaceAll(MOSS_LAYOUT_MARKER, ''), nlOn);
     const nlSpec = nlOn ? DEFAULT_COMFY_NL_SPEC : '';
     const resolved = template.includes('{{nl}}')
@@ -198,14 +201,17 @@ export async function buildAutoTagMessages(
   // 自然语言模式(profile.nl):ComfyUI 当前工作流或 NAI 渠道开启了「生成自然语言」。
   // 开启后协议变为 tag/nl 两键——自然语言是配合短 tag 用的,不是替代。
   // 动态负面词同样取自当前预设:切工作流即同时切走自然语言与动态负面词的口径。
-  const comfyOn = settings.defaultBackend === 'comfyui';
+  const comfyOn = isWorkflowBackend();
   const layoutOn = comfyOn && (settings.manga.enabled || profile.layout === true || usesMossLayout(options.prompts?.comfySpec));
   const naiCharPromptsOn = profile.naiCharPrompts;
-  const comfyPreset = comfyOn ? activeComfyPreset() : null;
+  const comfyPreset = settings.defaultBackend === 'comfyui' ? activeComfyPreset() : null;
   const nlOn = !layoutOn && profile.nl;
   // 动态负面词门槛:custom 模式看工作流是否含 %negative_prompt%;
   // simple 模式由模板决定(Flux 无真实负面输入,请求了也没地方写)。
   let negativeOn = false;
+  if (settings.defaultBackend === 'runninghub') {
+    try { negativeOn = runningHubPlaceholders(activeRunningHubPreset().workflow).includes('negative_prompt'); } catch { /* invalid preset */ }
+  }
   if (comfyPreset) {
     if (comfyPreset.mode === 'simple') {
       negativeOn = templateSupportsNegative(comfyPreset.simple.template);

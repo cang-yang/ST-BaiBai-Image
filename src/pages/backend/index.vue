@@ -4,6 +4,7 @@ import { computed, ref, watch, type Component } from 'vue';
 import ComfyUIPanel from './panels/ComfyUIPanel.vue';
 import NaiPanel from './panels/NaiPanel.vue';
 import WebUIPanel from './panels/WebUIPanel.vue';
+import RunningHubPanel from './panels/RunningHubPanel.vue';
 
 // 渠道页:页签只负责「看哪个面板」(纯浏览,本地状态,初始跟随当前出图渠道)。
 // 真正的选择在各面板的「使用此渠道出图」按钮(选中后显示「当前出图渠道」)
@@ -44,6 +45,7 @@ const PANELS: Record<BackendId, Component> = {
   webui: WebUIPanel,
   comfyui: ComfyUIPanel,
   nai: NaiPanel,
+  runninghub: RunningHubPanel,
 };
 const activePanel = computed(() => PANELS[viewing.value]);
 </script>
