@@ -1,6 +1,7 @@
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { snapshotPreset } from '@/presets/model';
 import { builtinImagePreset } from '@/presets/catalog';
+import { assertMangaText, MangaTextCorrectionError, withMangaTextCorrection } from '@/presets/mangaText';
 import { dshChatId, requestDshCompletion, type DshOperation } from '@/api/dsh';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
@@ -325,6 +326,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     // 协议形态开跑时快照一次:写协议、验收与收尾同一份,用户中途拨开关也不会前后不一
     const effectivePreset = preset ?? builtinImagePreset();
     const profile = autoTagProfile(effectivePreset);
+    const mangaSnapshot = JSON.parse(JSON.stringify(settings.manga));
     const messages = await buildAutoTagMessages(
       context,
       floor,
@@ -344,7 +346,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const retries = Math.max(0, Math.floor(Number(promptOptions.retryCount) || 0));
     let plan: ImagePlan | null = null;
     let lastError = '';
+    let retriesUsed = 0;
     for (let attempt = 0; attempt <= retries && !plan; attempt++) {
+      retriesUsed = attempt;
       if (controller.signal.aborted) {
         processed.delete(identity);
         return;
@@ -360,6 +364,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             promptOptions.minImages,
             promptOptions.maxImages,
           );
+          assertMangaText(candidate, effectivePreset, !!profile.layout, mangaSnapshot, profile.lockedSize);
           // 单槽重写忽略本次 changes,不校验建档 nl —— 校验它会为一份会被丢弃的
           // changes 白白消耗重试次数。NAI 关了自然语言时协议不要 nl,也就不验。
           if (
@@ -378,27 +383,17 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
           : retries > 0
             ? `自动 tag(第 ${floor} 楼 · 第 ${attempt + 1} 次)`
             : `自动 tag(第 ${floor} 楼)`;
-        if (dshOn && channel) {
-          await requestDshCompletion(channel, messages, context, {
-            signal:controller.signal, source, validate,
-            operation:dshOperation, expectedChatId:dshIdentity,
-            target:{floor,swipe_id:swipeId ?? null,revision:identity},
-          });
-        } else if (channel) {
-          await requestCompletion(channel, messages, {
-            direct,
-            imagePlanTool,
-            signal: controller.signal,
-            source,
-            validate,
-          });
-        } else {
-          await requestViaMainApi(messages, {
-            signal: controller.signal,
-            source,
-            validate,
-          });
-        }
+        await withMangaTextCorrection(messages, source, controller.signal, (requestMessages, requestSource, check) => {
+          if (dshOn && channel) {
+            return requestDshCompletion(channel, requestMessages, context, {
+              signal: controller.signal, source: requestSource, validate: check,
+              operation: dshOperation, expectedChatId: dshIdentity,
+              target: { floor, swipe_id: swipeId ?? null, revision: identity },
+            });
+          }
+          const requestOptions = { direct, imagePlanTool, signal: controller.signal, source: requestSource, validate: check };
+          return channel ? requestCompletion(channel, requestMessages, requestOptions) : requestViaMainApi(requestMessages, requestOptions);
+        }, validate);
         if (controller.signal.aborted) {
           processed.delete(identity);
           return;
@@ -411,13 +406,14 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         }
         lastError = error instanceof Error ? error.message : String(error);
         console.warn(`[柏宝绘] 第 ${floor} 楼第 ${attempt + 1}/${retries + 1} 次生成 tag 失败`, error);
+        if (error instanceof MangaTextCorrectionError) break;
       }
     }
     if (!plan) {
       // 重试耗尽:允许同一正文在后续重新渲染后再试
       processed.delete(identity);
       toastr.error(
-        `${lastError}${retries > 0 ? `(已自动重试 ${retries} 次)` : ''}`,
+        `${lastError}${retriesUsed > 0 ? `(已自动重试 ${retriesUsed} 次)` : ''}`,
         '柏宝绘自动 tag 失败',
       );
       return;

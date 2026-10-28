@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { newImagePreset } from '@/presets/model';
 import { settings, newChannel } from '@/state/settings';
 import { cancelFloorTags, requestFloorTags } from './runner';
+import { mangaDefaults } from '@/manga/layouts';
 
 const mock = vi.hoisted(() => ({
   context: null as any,
@@ -11,7 +12,7 @@ const mock = vi.hoisted(() => ({
 }));
 vi.mock('@/api/client', () => ({ requestCompletion: mock.request, requestViaMainApi: mock.main }));
 vi.mock('@/autoTag/prompt', () => ({
-  autoTagProfile: () => ({ naiCharPrompts: false, nl: false, lockedSize: null }),
+  autoTagProfile: (preset: any) => ({ naiCharPrompts: false, nl: false, lockedSize: null, layout: preset.mangaText === 'required' }),
   buildAutoTagMessages: mock.build,
 }));
 vi.mock('@/st/context', async importOriginal => ({
@@ -43,6 +44,33 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('preset runner integration', () => {
+  it('accepts corrected lettering before writing a plan into the story', async () => {
+    settings.imagePresets.presets[0].mangaText = 'required';
+    settings.manga = { ...mangaDefaults(), enabled: true };
+    const corrected = JSON.parse(wordless());
+    const page = JSON.parse(corrected.images[0].tag);
+    page.items.push({ panel: 1, slot: 'TR', label: 'text', text: '旅人正在等车。', caption: 'a narration box' });
+    corrected.images[0].tag = JSON.stringify(page);
+    mock.request.mockImplementationOnce(async (_c, _m, opts) => { opts.validate(wordless()); return ''; })
+      .mockImplementationOnce(async (_c, _m, opts) => { opts.validate(JSON.stringify(corrected)); return JSON.stringify(corrected); });
+    await requestFloorTags(0);
+    expect(mock.request).toHaveBeenCalledTimes(2);
+    expect(mock.write).toHaveBeenCalledOnce();
+    const update = mock.write.mock.calls[0][1] as (source: string) => string;
+    expect(update(mock.context.chat[0].mes)).toContain('旅人正在等车。');
+  });
+  it('blocks wordless pages and stops after one correction even with general retries enabled', async () => {
+    settings.imagePresets.presets[0].mangaText = 'required';
+    settings.manga = { ...mangaDefaults(), enabled: true };
+    settings.autoTag.retryCount = 5;
+    mock.request.mockImplementationOnce(async (_c, _m, opts) => { opts.validate(wordless()); return ''; })
+      .mockImplementationOnce(async (_c, _m, opts) => { opts.validate(wordless()); return ''; });
+    await requestFloorTags(0);
+    expect(mock.request).toHaveBeenCalledTimes(2);
+    expect(mock.request.mock.calls[1][2].source).toContain('文字补正 1/1');
+    expect(mock.write).not.toHaveBeenCalled();
+    expect(toastr.error).toHaveBeenCalledWith(expect.stringContaining('文字补正未通过'), expect.anything());
+  });
   it('passes an explicit owned builtin preset when the user selects the default', async () => {
     settings.imagePresets.activeId = '';
     await requestFloorTags(0);
@@ -93,3 +121,10 @@ describe('preset runner integration', () => {
     expect(mock.write).not.toHaveBeenCalled();
   });
 });
+
+function wordless(): string {
+  return JSON.stringify({ images: [{ position: 'P1', tag: JSON.stringify({
+    layout: 'balanced_1', summary: { caption: 'A page' },
+    items: [{ panel: 1, slot: 'S', label: 'character', caption: 'A traveler' }],
+  }) }], changes: [] });
+}

@@ -3,6 +3,13 @@ import { exportPreset, importPresets, newImagePreset, newPromptEntry, normalizeI
 import { assertPresetReady, renderPreset } from './render';
 
 describe('native image presets', () => {
+  it('roundtrips the optional manga lettering policy without changing legacy defaults', () => {
+    const preset = newImagePreset();
+    expect(validatePreset(preset).mangaText).toBe('auto');
+    preset.mangaText = 'required';
+    expect(importPresets(exportPreset(preset))[0].mangaText).toBe('required');
+    expect(() => validatePreset({ ...preset, mangaText: 'anything' })).toThrow(/文字/);
+  });
   it('roundtrips native presets without secrets or unrelated settings and regenerates IDs', () => {
     const original = newImagePreset();
     original.variables.style = 'watercolor';

@@ -1,4 +1,5 @@
 import type { ChatMsg } from '@/api/client';
+import { MANGA_TEXT_REQUIREMENT } from '@/presets/mangaText';
 import { templateSupportsNegative } from '@/backends/comfyTemplates';
 import { getWorkflowPlaceholders } from '@/backends/comfyui';
 import { runningHubPlaceholders } from '@/backends/runninghubWorkflow';
@@ -417,9 +418,10 @@ ${characterRule}
     assertPresetReady(rendered);
     messages.push(...rendered.messages);
   }
-  messages.push({ role: 'system', content: preset?.output === 'tool'
+  const letteringContract = layoutOn && preset?.mangaText === 'required' ? `\n\n${MANGA_TEXT_REQUIREMENT}` : '';
+  messages.push({ role: 'system', content: (preset?.output === 'tool'
     ? `${contract}\n\n本次最终结果只通过 submit_image_plan 工具提交一次，参数就是上述 JSON 对象。不要把结果写进普通回复，不输出检查过程。`
-    : contract, purpose: 'contract' });
+    : contract) + letteringContract, purpose: 'contract' });
   // 思维链:压在任务协议之后,要求模型先在 <thinking> 里过检查点再输出 JSON。
   // 解析端(protocol.ts)会先剥掉 think 块再取 JSON,二者配套;按后端取对应的那一份。
   const mangaThinking =

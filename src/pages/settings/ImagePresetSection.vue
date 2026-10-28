@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import PresetRuleEditor from './PresetRuleEditor.vue';
+import PresetContentDirectory from './PresetContentDirectory.vue';
+import { previewPurpose } from './presetEditor';
 import { settings } from '@/state/settings';
 import { getContext, isAiStoryMessage } from '@/st/context';
 import { buildAutoTagMessages, autoTagProfile } from '@/autoTag/prompt';
@@ -17,8 +19,10 @@ import {
   type ImagePromptPreset,
 } from '@/presets/model';
 import { PRESET_VARIABLES, type RenderedPreset } from '@/presets/render';
-import { builtinImagePreset, RULE_TARGETS } from '@/presets/catalog';
+import { builtinImagePreset, BUILTIN_RULES, RULE_TARGETS } from '@/presets/catalog';
 import { legacyRules } from '@/presets/rules';
+import { assertMangaText, withMangaTextCorrection } from '@/presets/mangaText';
+import { buildMangaSpec } from '@/manga/layouts';
 
 const config = computed(() => settings.imagePresets);
 const picker = ref<HTMLInputElement>();
@@ -56,20 +60,38 @@ const effectiveTarget = computed(() => {
 const ruleModes = { builtin: '内置参考', custom: '本预设自定义', off: '不附加' };
 const viewRules = computed(() => displayed.value.rules ?? legacyRules({}, {}, displayed.value.useBackendRules !== false));
 const editorTab = ref('content');
-const editorTabs = [{ id: 'content', label: '画面要求' }, { id: 'rules', label: '书写规范' }, { id: 'advanced', label: '高级' }];
+const editorRoot = ref<HTMLFieldSetElement>();
+const editorTabs = [{ id: 'content', label: '画面要求' }, { id: 'rules', label: '规范与检查' }, { id: 'advanced', label: '输出与变量' }, { id: 'external', label: '外部附加' }];
+async function openEditor(panel: string, id = '', section = ''): Promise<void> {
+  editorTab.value = panel;
+  if (id) { search.value = ''; entryId.value = id; }
+  await nextTick();
+  const destination = editorRoot.value?.querySelector<HTMLElement>(section ? `#${section}` : `#ip-panel-${panel} h3`);
+  destination?.focus();
+  destination?.scrollIntoView({ block: 'nearest' });
+}
 function tabKey(event: KeyboardEvent, index: number): void {
-  const next = event.key === 'ArrowRight' ? (index + 1) % 3 : event.key === 'ArrowLeft' ? (index + 2) % 3 : event.key === 'Home' ? 0 : event.key === 'End' ? 2 : -1;
+  const count = editorTabs.length;
+  const next = event.key === 'ArrowRight' ? (index + 1) % count : event.key === 'ArrowLeft' ? (index + count - 1) % count : event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : -1;
   if (next < 0) return;
-  event.preventDefault(); editorTab.value = editorTabs[next].id;
+  event.preventDefault();
+  event.stopPropagation();
+  editorTab.value = editorTabs[next].id;
   (event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
 }
 const activeName = computed(() => config.value.presets.find(p => p.id === config.value.activeId)?.name ?? '内置默认');
 const draft = ref<ImagePromptPreset>();
+watch(effectiveTarget, currentTarget => {
+  if (ruleTarget.value === currentTarget.value) ruleTarget.value = RULE_TARGETS.find(item => item.value !== currentTarget.value)!.value;
+});
 const variables = ref<{ name: string; value: string }[]>([]);
 const entryId = ref('');
 const entry = computed(() => draft.value?.entries.find(e => e.id === entryId.value));
 const search = ref('');
 const filteredEntries = computed(() => draft.value?.entries.filter(e => `${e.name} ${e.content}`.toLowerCase().includes(search.value.toLowerCase())) ?? []);
+watch(filteredEntries, items => {
+  if (!items.some(item => item.id === entryId.value)) entryId.value = items[0]?.id ?? '';
+});
 const removeTarget = ref<ImagePromptPreset>();
 const error = ref(''), notice = ref(''), testText = ref('');
 const busy = ref(false), result = ref(''), preview = ref<ChatMsg[]>([]);
@@ -77,15 +99,19 @@ const checkResult = ref<RenderedPreset>();
 let controller: AbortController | undefined;
 onBeforeUnmount(() => controller?.abort());
 watch(selected, () => { preview.value = []; checkResult.value = undefined; result.value = ''; error.value = ''; });
+watch([draft, variables, testText], () => {
+  if (!busy.value) { preview.value = []; checkResult.value = undefined; result.value = ''; }
+}, { deep: true });
 
 function fail(e: unknown): void { error.value = e instanceof Error ? e.message : String(e); }
 function edit(value: ImagePromptPreset): void {
   draft.value = JSON.parse(JSON.stringify(value));
   draft.value!.rules ??= legacyRules({}, {}, value.useBackendRules !== false);
+  draft.value!.mangaText ??= 'auto';
   variables.value = Object.entries(value.variables).map(([name, value]) => ({ name, value }));
   entryId.value = value.entries[0]?.id ?? '';
   search.value = ''; error.value = ''; notice.value = ''; preview.value = []; checkResult.value = undefined; result.value = '';
-  ruleTarget.value = effectiveTarget.value.value;
+  ruleTarget.value = RULE_TARGETS.find(item => item.value !== effectiveTarget.value.value)!.value;
   editorTab.value = value.entries.length ? 'content' : 'rules';
 }
 function current(): ImagePromptPreset | null {
@@ -150,6 +176,7 @@ function remove(): void {
 }
 function addEntry(): void {
   const added = newPromptEntry(); draft.value?.entries.push(added); entryId.value = added.id; search.value = '';
+  void openEditor('content', added.id);
 }
 function move(offset: number): void {
   if (!draft.value || !entry.value) return;
@@ -179,6 +206,7 @@ async function inspect(send: boolean): Promise<void> {
     const prepared = prepareTargetText(context.chat[floor].mes, settings.excludes.customStripTags);
     const options = JSON.parse(JSON.stringify(settings.autoTag));
     const profile = autoTagProfile(chosen ?? builtinImagePreset());
+    const mangaSnapshot = JSON.parse(JSON.stringify(settings.manga));
     const assigned = settings.channels.find(c => c.id === settings.assignments.tagGen);
     const channel = assigned ? JSON.parse(JSON.stringify(assigned)) as typeof assigned : null;
     const direct = !!channel && config.value.directChannels.includes(channel.id);
@@ -195,9 +223,17 @@ async function inspect(send: boolean): Promise<void> {
       signal: controller.signal, source: `预设测试：${chosen?.name ?? '内置默认'}`,
       imagePlanTool: chosen?.output === 'tool', direct,
       onDelta: (text: string) => { if (Date.now() - lastUpdate > 120) { result.value = text; lastUpdate = Date.now(); } },
-      validate: (text: string) => { parseImagePlan(text, prepared.segments, options.minImages, options.maxImages); },
+      validate: (text: string) => {
+        const plan = parseImagePlan(text, prepared.segments, options.minImages, options.maxImages);
+        assertMangaText(plan, chosen, !!profile.layout, mangaSnapshot, profile.lockedSize);
+      },
     };
-    result.value = channel ? await requestCompletion(channel, messages, opts) : await requestViaMainApi(messages, opts);
+    result.value = await withMangaTextCorrection(messages, opts.source, controller.signal, (requestMessages, source, validate) => {
+      preview.value = requestMessages;
+      result.value = '';
+      const requestOptions = { ...opts, source, validate };
+      return channel ? requestCompletion(channel, requestMessages, requestOptions) : requestViaMainApi(requestMessages, requestOptions);
+    }, opts.validate);
     notice.value = '测试通过：已取得有效配图计划，未生成图片、未修改正文';
   } catch (e) {
     if (controller.signal.aborted) error.value = '测试已取消';
@@ -247,19 +283,22 @@ async function inspect(send: boolean): Promise<void> {
     <details v-if="(draft ?? preset)?.warnings.length" class="ip-warning" open>
       <summary>导入兼容性提醒</summary><ul><li v-for="warning in (draft ?? preset)?.warnings" :key="warning">{{ warning }}</li></ul>
     </details>
-    <fieldset v-if="draft" class="ip-editor" :disabled="busy">
+    <fieldset v-if="draft" ref="editorRoot" class="ip-editor" :disabled="busy">
       <label>预设名称<input v-model="draft.name" class="bbi-input" aria-label="预设名称" /></label>
       <label>备注<input v-model="draft.description" class="bbi-input" aria-label="预设备注" /></label>
+      <PresetContentDirectory :preset="draft" :rules="viewRules" :builtin-rules="BUILTIN_RULES" :target="effectiveTarget" :variable-count="variables.length" :has-preview="!!preview.length" @navigate="openEditor" />
       <div class="ip-tabs" role="tablist" aria-label="预设编辑分类">
         <button v-for="(tab, index) in editorTabs" :id="`ip-tab-${tab.id}`" :key="tab.id" type="button" role="tab" :aria-selected="editorTab === tab.id" :aria-controls="`ip-panel-${tab.id}`" :tabindex="editorTab === tab.id ? 0 : -1" @click="editorTab = tab.id" @keydown="tabKey($event, index)">{{ tab.label }}</button>
       </div>
       <div v-show="editorTab === 'content'" id="ip-panel-content" role="tabpanel" aria-labelledby="ip-tab-content">
+      <h3 tabindex="-1">画面要求</h3>
       <div class="ip-toolbar"><strong>提示词条目 · {{ draft.entries.filter(e => e.enabled).length }} / {{ draft.entries.length }} 已开启</strong><button class="bbi-btn bbi-btn-sm" @click="addEntry"><Icon name="plus" />添加条目</button></div>
       <p v-if="!draft.entries.length" class="ip-muted">暂无额外画面要求</p>
       <input v-if="draft.entries.length" v-model="search" class="bbi-input" type="search" placeholder="搜索条目" aria-label="搜索预设条目" />
       <select v-if="draft.entries.length" v-model="entryId" class="bbi-input" aria-label="选择预设条目">
         <option v-for="item in filteredEntries" :key="item.id" :value="item.id">{{ item.enabled ? '' : '[停用] ' }}{{ item.name }}</option>
       </select>
+      <p v-if="search && !filteredEntries.length" class="ip-muted" role="status">没有匹配的条目</p>
       <div v-if="entry" class="ip-entry">
         <div class="ip-toolbar">
           <label class="ip-check"><input v-model="entry.enabled" type="checkbox" />启用此条目</label>
@@ -282,16 +321,25 @@ async function inspect(send: boolean): Promise<void> {
       </div>
       </div>
       <div v-show="editorTab === 'rules'" id="ip-panel-rules" role="tabpanel" aria-labelledby="ip-tab-rules">
-        <label>适用场景<select v-model="ruleTarget" class="bbi-input" aria-label="规范适用场景"><option v-for="item in RULE_TARGETS" :key="item.value" :value="item.value">{{ item.label }}{{ item.value === effectiveTarget.value ? '（当前）' : '' }}</option></select></label>
+        <h3 tabindex="-1">当前规范 · {{ effectiveTarget.label }}</h3>
         <template v-if="draft.rules">
-          <PresetRuleEditor :key="target.spec" :rule="draft.rules[target.spec]" :rule-key="target.spec" title="书写规范" />
-          <PresetRuleEditor :key="target.check" :rule="draft.rules[target.check]" :rule-key="target.check" title="检查指导" />
+          <PresetRuleEditor id="ip-current-spec" :key="effectiveTarget.spec" tabindex="-1" :rule="draft.rules[effectiveTarget.spec]" :rule-key="effectiveTarget.spec" title="书写规范" />
+          <PresetRuleEditor id="ip-current-check" :key="effectiveTarget.check" tabindex="-1" :rule="draft.rules[effectiveTarget.check]" :rule-key="effectiveTarget.check" title="检查指导" />
+          <details class="ip-alternatives">
+            <summary>其他后端与场景的规范 · {{ RULE_TARGETS.length - 1 }} 组</summary>
+            <label>适用场景<select v-model="ruleTarget" class="bbi-input" aria-label="规范适用场景"><option v-for="item in RULE_TARGETS.filter(item => item.value !== effectiveTarget.value)" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
+            <PresetRuleEditor :key="target.spec" :rule="draft.rules[target.spec]" :rule-key="target.spec" title="备用书写规范" />
+            <PresetRuleEditor :key="target.check" :rule="draft.rules[target.check]" :rule-key="target.check" title="备用检查指导" />
+          </details>
         </template>
       </div>
       <div v-show="editorTab === 'advanced'" id="ip-panel-advanced" role="tabpanel" aria-labelledby="ip-tab-advanced">
+        <h3 tabindex="-1">输出与变量</h3>
         <label>输出方式<select v-model="draft.output" class="bbi-input" aria-label="预设输出方式"><option value="text">普通文本 · JSON 计划</option><option value="tool">工具输出 · 需要支持工具的副 API</option></select></label>
         <label>工作流提示词格式<select :value="draft.format ?? 'auto'" class="bbi-input" aria-label="工作流提示词格式" @change="draft.format = ($event.target as HTMLSelectElement).value as 'auto' | 'moss_layout'"><option value="auto">跟随后端与漫画开关</option><option value="moss_layout">MOSS 原生 Layout</option></select></label>
-        <PresetRuleEditor v-if="draft.rules" :rule="draft.rules.jailbreak" rule-key="jailbreak" title="通用前置规则" />
+        <label id="ip-lettering" tabindex="-1">漫画文字{{ effectiveTarget.value !== 'manga' ? ' · 当前未启用漫画' : '' }}<select v-model="draft.mangaText" class="bbi-input" aria-label="漫画文字策略"><option value="auto">按剧情安排</option><option value="required">必须有叙事文字</option></select></label>
+        <PresetRuleEditor v-if="draft.rules" id="ip-prefix" tabindex="-1" :rule="draft.rules.jailbreak" rule-key="jailbreak" title="通用前置规则" />
+        <h3 id="ip-custom-variables" tabindex="-1">自定义变量 · {{ variables.length }} 个</h3>
         <div v-for="(variable, index) in variables" :key="index" class="ip-variable">
           <input v-model="variable.name" class="bbi-input" placeholder="变量名" :aria-label="`变量名 ${index + 1}`" />
           <textarea v-model="variable.value" class="bbi-input" rows="2" placeholder="变量内容" :aria-label="`变量值 ${index + 1}`" />
@@ -299,6 +347,16 @@ async function inspect(send: boolean): Promise<void> {
         </div>
         <button class="bbi-btn bbi-btn-sm" @click="variables.push({ name: '', value: '' })"><Icon name="plus" />添加变量</button>
         <details><summary>可用内容变量</summary><dl class="ip-variables"><template v-for="[key, label] in PRESET_VARIABLES" :key="key"><dt>{{ '{' + '{' + key + '}' + '}' }}</dt><dd>{{ label }}</dd></template></dl></details>
+      </div>
+      <div v-show="editorTab === 'external'" id="ip-panel-external" role="tabpanel" aria-labelledby="ip-tab-external">
+        <h3 tabindex="-1">外部附加内容</h3>
+        <dl class="ip-external">
+          <dt>版式设置 · 只读</dt><dd>{{ effectiveTarget.value === 'manga' ? '使用当前漫画设置中的版式、分格与坐标约束' : '当前未启用漫画版式' }}</dd>
+          <dt>插件固定协议 · 只读</dt><dd>图片位置、数量与输出结构，由插件按当前后端生成</dd>
+          <dt>剧情上下文 · 只读</dt><dd>{{ preview.length ? '已有请求预览，完整内容见下方“查看实际请求消息”' : '本地检查后可见：正文、角色资料、世界书与记忆等当前请求内容' }}</dd>
+        </dl>
+        <details v-if="effectiveTarget.value === 'manga' && settings.manga.enabled"><summary>当前版式与选择要求</summary><pre>{{ buildMangaSpec(settings.manga) }}</pre></details>
+        <details v-for="message in preview.filter(item => item.purpose === 'contract')" :key="message.purpose"><summary>本次插件固定协议</summary><pre>{{ message.content }}</pre></details>
       </div>
       <div class="ip-toolbar ip-actions">
         <button class="bbi-btn bbi-btn-primary" @click="save"><Icon name="check" />保存预设</button>
@@ -317,7 +375,7 @@ async function inspect(send: boolean): Promise<void> {
         <p>本次命中 {{ checkResult.activated.length }} 个条目</p>
         <ul v-if="checkResult.warnings.length" class="ip-error"><li v-for="warning in checkResult.warnings" :key="warning">{{ warning }}</li></ul>
       </template>
-      <details v-if="preview.length"><summary>查看实际请求消息 · {{ preview.length }} 条</summary><div v-for="(message, index) in preview" :key="index"><strong>{{ index + 1 }} · {{ message.role }}</strong><pre>{{ message.content }}</pre></div></details>
+      <details v-if="preview.length"><summary>查看实际请求消息 · {{ preview.length }} 条</summary><div v-for="(message, index) in preview" :key="index"><strong>{{ index + 1 }} · {{ previewPurpose(message.purpose) }} · {{ message.role }}</strong><pre>{{ message.content }}</pre></div></details>
       <details v-if="result" open><summary>{{ busy ? '正在接收' : '返回结果' }}</summary><pre>{{ result }}</pre></details>
     </details>
     <ConfirmDialog :open="!!removeTarget" title="删除配图预设" confirm-text="删除" tone="danger" confirm-icon="trash" @confirm="remove" @cancel="removeTarget = undefined">删除「{{ removeTarget?.name }}」？正在使用时将切回内置默认。</ConfirmDialog>
@@ -337,6 +395,8 @@ async function inspect(send: boolean): Promise<void> {
 .ip-section .bbi-input:disabled { opacity: .65; }
 .ip-section p { margin: 0; }
 .ip-editor { min-width: 0; padding: 12px 0; margin: 0; border: 0; border-top: 1px solid var(--bbi-border); }
+.ip-editor h3 { margin: 12px 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.ip-editor :focus-visible { outline: 2px solid var(--bbi-accent); outline-offset: 2px; }
 .ip-entry { border-block: 1px solid var(--bbi-border); padding: 8px 0; margin: 10px 0; }
 .ip-section details { padding: 8px 0; min-width: 0; }
 .ip-section .ip-manage { padding: 0; position: relative; }
@@ -354,8 +414,11 @@ async function inspect(send: boolean): Promise<void> {
 .ip-effective dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 6px; margin: 10px 0 0; }
 .ip-effective dt { color: var(--bbi-ink-muted); }
 .ip-effective dd { margin: 0; overflow-wrap: anywhere; }
+.ip-external { margin: 0; display: grid; gap: 8px; }
+.ip-external dt { font-weight: 600; }
+.ip-external dd { margin: 0 0 8px; color: var(--bbi-ink-muted); overflow-wrap: anywhere; line-height: 1.6; }
 .ip-tabs { display: flex; border-bottom: 1px solid var(--bbi-line); margin: 12px 0; }
-.ip-tabs button { flex: 1; border: 0; background: transparent; color: var(--bbi-ink-muted); padding: 10px 4px; cursor: pointer; font: inherit; border-bottom: 2px solid transparent; }
+.ip-tabs button { flex: 1; min-width: 0; overflow-wrap: anywhere; border: 0; background: transparent; color: var(--bbi-ink-muted); padding: 10px 4px; cursor: pointer; font: inherit; border-bottom: 2px solid transparent; }
 .ip-tabs button[aria-selected=true] { color: var(--bbi-accent); border-bottom-color: var(--bbi-accent); font-weight: 600; }
 .ip-up { transform: rotate(-90deg); }
 .ip-down { transform: rotate(90deg); }

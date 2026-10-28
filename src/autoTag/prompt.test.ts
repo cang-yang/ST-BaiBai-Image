@@ -63,6 +63,22 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
+  it('injects required narrative lettering only for an opted-in manga preset', async () => {
+    const oldBackend = settings.defaultBackend, oldManga = settings.manga;
+    try {
+      settings.defaultBackend = 'comfyui';
+      settings.manga = { ...mangaDefaults(), enabled: true };
+      const preset = newImagePreset();
+      preset.mangaText = 'required';
+      const options: AutoTagSettings = { enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 1, autoGenerate: true, prompts: prompts() };
+      const build = () => buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', autoTagProfile(preset), preset);
+      expect((await build()).map(m => m.content).join('\n')).toContain('漫画文字要求：必须有叙事文字');
+      preset.mangaText = 'auto';
+      expect((await build()).map(m => m.content).join('\n')).not.toContain('漫画文字要求：必须有叙事文字');
+      preset.mangaText = 'required'; settings.manga.enabled = false;
+      expect((await build()).map(m => m.content).join('\n')).not.toContain('漫画文字要求：必须有叙事文字');
+    } finally { settings.defaultBackend = oldBackend; settings.manga = oldManga; }
+  });
   it('switches owned rules without leaking legacy global text or another preset', async () => {
     const oldBackend = settings.defaultBackend, oldManga = settings.manga, oldSpec = settings.autoTag.prompts.comfySpec;
     try {

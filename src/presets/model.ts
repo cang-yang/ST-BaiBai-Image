@@ -18,6 +18,7 @@ export interface ImagePromptPreset {
   description: string;
   output: 'text' | 'tool';
   format?: 'auto' | 'moss_layout';
+  mangaText?: 'auto' | 'required';
   /** v1 import compatibility only; v2 uses independently owned rules. */
   useBackendRules?: boolean;
   rules?: PresetRules;
@@ -52,7 +53,7 @@ export function newPromptEntry(): PromptEntry {
 
 export function newImagePreset(): ImagePromptPreset {
   return {
-    id: id(), name: '我的正文配图', description: '', output: 'text', rules: defaultRules(),
+    id: id(), name: '我的正文配图', description: '', output: 'text', mangaText: 'auto', rules: defaultRules(),
     entries: [{ ...newPromptEntry(), name: '画面要求', content: '忠于正文，保持人物外貌与场景连续。优先选择有明确主体、动作和情绪的画面。' }],
     variables: {}, warnings: [],
   };
@@ -75,6 +76,7 @@ function readPreset(raw: unknown, freshIds: boolean): ImagePromptPreset {
   if (new Set(entries.map(e => e.id)).size !== entries.length) throw new Error('条目 ID 重复');
   if (raw.output !== undefined && !['text', 'tool'].includes(raw.output)) throw new Error('不支持的输出方式');
   if (raw.format !== undefined && !['auto', 'moss_layout'].includes(raw.format)) throw new Error('不支持的提示词格式');
+  if (raw.mangaText !== undefined && !['auto', 'required'].includes(raw.mangaText)) throw new Error('不支持的漫画文字要求');
   const variables: Record<string, string> = Object.create(null);
   if (raw.variables !== undefined && !record(raw.variables)) throw new Error('变量必须是名称与文本组成的对象');
   for (const [key, value] of Object.entries(raw.variables ?? {})) {
@@ -86,6 +88,7 @@ function readPreset(raw: unknown, freshIds: boolean): ImagePromptPreset {
     id: freshIds ? id() : text(raw.id) || id(), name: text(raw.name).trim() || '未命名预设',
     description: text(raw.description), output: raw.output === 'tool' ? 'tool' : 'text',
     ...(raw.format ? { format: raw.format } : {}),
+    mangaText: raw.mangaText === 'required' ? 'required' : 'auto',
     ...(raw.rules !== undefined ? { rules: readRules(raw.rules) }
       : freshIds ? { rules: legacyRules({}, {}, raw.useBackendRules !== false) }
       : { useBackendRules: raw.useBackendRules !== false }), entries, variables,
@@ -145,8 +148,8 @@ export function snapshotPreset(config: ImagePresetSettings): ImagePromptPreset |
 
 export function exportPreset(preset: ImagePromptPreset): string {
   // Explicit allowlist: no channel, key, host settings or unrelated request profiles.
-  const { name, description, output, format, useBackendRules, entries, variables, warnings, rules } = validatePreset(preset);
-  return JSON.stringify({ format: PRESET_FORMAT, version: 2, preset: { name, description, output, ...(format ? { format } : {}), rules: rules ?? legacyRules({}, {}, useBackendRules !== false), entries, variables, warnings } }, null, 2);
+  const { name, description, output, format, mangaText, useBackendRules, entries, variables, warnings, rules } = validatePreset(preset);
+  return JSON.stringify({ format: PRESET_FORMAT, version: 2, preset: { name, description, output, ...(format ? { format } : {}), mangaText, rules: rules ?? legacyRules({}, {}, useBackendRules !== false), entries, variables, warnings } }, null, 2);
 }
 
 export function presetWithMangaRules(base: ImagePromptPreset, name: string, bundle: { spec: string; thinking: string }): ImagePromptPreset {
