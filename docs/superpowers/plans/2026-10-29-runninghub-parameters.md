@@ -45,11 +45,12 @@ settings changes. Preserve all existing scalar override submission behavior.
 - [x] Run affected backend/state/generation tests and inspect the diff.
 - [x] Bump release version, build, back up and update local extension files,
   preserve existing workflows and add the new MOSS copy if necessary.
-- [ ] Record verification, commit and push the existing fork feature branch.
+- [x] Record verification, commit and push the existing fork feature branch.
 
 ## Verification Record
 
 - Version: 0.3.19. Full suite: 88 files, 1193 passed, 3 existing skips.
+- Feature commit `af6510c` pushed to `origin/feat/runninghub-image`.
 - Typecheck and production build passed. Existing bundle-size warning remains.
 - Real SillyTavern at `http://127.0.0.1:8000/`: imported existing API workflow
   and an unrelated custom-node fixture using the UI.
