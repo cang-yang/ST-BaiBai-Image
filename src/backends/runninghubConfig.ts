@@ -1,6 +1,7 @@
 import { normalizeOrientationLock, type OrientationLock, type SizePair } from './size';
 import { randomUuid } from '@/randomUuid';
 import { normalizeManga, type MangaCustomLayout } from '@/manga/layouts';
+import { normalizeParameterControls, type ParameterControl } from './workflowParameterSchema';
 
 export interface RunningHubMangaBundle {
   spec: string;
@@ -27,6 +28,8 @@ export interface RunningHubPreset extends SizePair {
   manga?: boolean;
   mangaPositive?: string;
   mangaBundle?: RunningHubMangaBundle;
+  parameterControls?: ParameterControl[];
+  initialWorkflow?: string;
 }
 
 export function normalizeRunningHubMangaBundle(value: unknown): RunningHubMangaBundle | undefined {
@@ -132,6 +135,8 @@ export function normalizeRunningHub(value: unknown): RunningHubSettings {
       manga: w.manga === true,
       mangaPositive: text(w.mangaPositive),
       mangaBundle: normalizeRunningHubMangaBundle(w.mangaBundle),
+      parameterControls: normalizeParameterControls(w.parameterControls),
+      initialWorkflow: text(w.initialWorkflow) || text(w.workflow),
     };
   });
   if (!workflows.length) workflows.push(defaults.workflows[0]);

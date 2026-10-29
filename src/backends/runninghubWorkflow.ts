@@ -2,6 +2,7 @@ import { parseWorkflowTemplate, type ComfyWorkflow, type ComfyTemplateValues } f
 import { newRunningHubPreset, normalizeRunningHubMangaBundle, type RunningHubPreset } from './runninghubConfig';
 import { parseSize } from './size';
 import { applyMangaFrames, parseCustomLayout, resizeMangaCanvases, type MangaSettings } from '@/manga/layouts';
+import { normalizeParameterControls } from './workflowParameterSchema';
 
 export interface NodeOverride { nodeId: string; fieldName: string; fieldValue: string | number | boolean }
 export interface WorkflowField {
@@ -109,6 +110,7 @@ export function importRunningHubWorkflow(text: string, fallbackName = '导入工
   const workflow = typeof data === 'string' ? data : JSON.stringify(data);
   parseWorkflowTemplate(workflow);
   preset.workflow = workflow;
+  preset.initialWorkflow = workflow;
   // Snowflake IDs must never pass through Number (loss of precision).
   if (wrapper.workflowId !== undefined && typeof wrapper.workflowId !== 'string') {
     throw new Error('workflowId 必须是带引号的字符串，避免长数字精度丢失');
@@ -117,6 +119,10 @@ export function importRunningHubWorkflow(text: string, fallbackName = '导入工
   const options = wrapper.baibai;
   if (options && typeof options === 'object' && !Array.isArray(options)) {
     const o = options as Record<string, unknown>;
+    preset.parameterControls = normalizeParameterControls(o.parameterControls);
+    if (typeof o.initialWorkflow === 'string') {
+      try { parseWorkflowTemplate(o.initialWorkflow); preset.initialWorkflow = o.initialWorkflow; } catch { /* Keep imported defaults. */ }
+    }
     for (const key of ['portraitSize', 'landscapeSize', 'outputNodeId'] as const) {
       if (typeof o[key] === 'string') preset[key] = o[key];
     }
@@ -136,10 +142,11 @@ export function importRunningHubWorkflow(text: string, fallbackName = '导入工
 
 export function exportRunningHubWorkflow(preset: RunningHubPreset): string {
   parseWorkflowTemplate(preset.workflow);
-  const { portraitSize, landscapeSize, naturalLanguage, orientationLock, outputNodeId, manga, mangaPositive, mangaBundle } = preset;
+  const { portraitSize, landscapeSize, naturalLanguage, orientationLock, outputNodeId, manga, mangaPositive, mangaBundle, initialWorkflow, parameterControls } = preset;
   return JSON.stringify({
     name: preset.name, workflowId: workflowIdFromText(preset.workflowId), workflow: preset.workflow,
-    baibai: { portraitSize, landscapeSize, naturalLanguage, orientationLock, outputNodeId, manga, mangaPositive, mangaBundle },
+    baibai: { portraitSize, landscapeSize, naturalLanguage, orientationLock, outputNodeId, manga, mangaPositive, mangaBundle,
+      initialWorkflow, parameterControls: normalizeParameterControls(parameterControls) },
   }, null, 2);
 }
 

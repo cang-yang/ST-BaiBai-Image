@@ -3,10 +3,11 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import Icon from '@/components/Icon.vue';
 import BbiSelect from '@/components/BbiSelect.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
+import RunningHubParameters from './RunningHubParameters.vue';
 import { activeRunningHubPreset, ORIENTATION_LOCKS, settings } from '@/state/settings';
 import { newRunningHubPreset, newRunningHubKey, configuredRunningHubKeys, enabledRunningHubKeys, selectedRunningHubKey, RUNNINGHUB_SITES, type RunningHubKey } from '@/backends/runninghubConfig';
 import {
-  exportRunningHubWorkflow, importRunningHubWorkflow, outputNodeOptions, runningHubFields,
+  exportRunningHubWorkflow, importRunningHubWorkflow, outputNodeOptions,
   setRunningHubField, validateRunningHubWorkflow, workflowIdFromText, runningHubMangaSettings, prepareRunningHubPrompt, type WorkflowField,
 } from '@/backends/runninghubWorkflow';
 import {
@@ -30,16 +31,6 @@ const activeId = computed({
 });
 const presets = computed(() => config.value.workflows.map(w => ({ value: w.id, label: w.name || '未命名工作流' })));
 const invalid = computed(() => validateRunningHubWorkflow(active.value));
-const fields = computed(() => {
-  try { return runningHubFields(active.value.workflow); } catch { return []; }
-});
-const fieldError = computed(() => {
-  if (!active.value.workflow.trim()) return '尚未导入工作流';
-  try {
-    return runningHubFields(active.value.workflow).length ? '' : '此工作流没有可编辑的标量输入参数';
-  } catch (e) { return message(e); }
-});
-const nodesOpen = ref(false);
 if (!config.value.apiKeys.length) {
   config.value.apiKeys = configuredRunningHubKeys(config.value).map(key => ({ ...key, id: newRunningHubKey().id }));
   if (!config.value.apiKeys.length) config.value.apiKeys.push(newRunningHubKey('Key 1'));
@@ -81,7 +72,6 @@ const phaseLabels: Record<RunningHubPhase, string> = {
   waiting: '本地排队', submitting: '提交中', queued: '云端排队', running: '生成中',
   downloading: '下载中', success: '已完成', failed: '失败', cancelled: '已取消',
 };
-const placeholders = ['', '%prompt%', '%prompt%\n%nl%', '%negative_prompt%', '%seed%', '%width%', '%height%', '%nl%'];
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 
 function add() {
@@ -153,18 +143,6 @@ function exportFile() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (e) { error.value = message(e); }
-}
-function editField(field: WorkflowField, event: Event) {
-  const input = event.target as HTMLInputElement;
-  const value = typeof field.value === 'boolean' ? input.checked
-    : typeof field.value === 'number' ? Number(input.value) : input.value;
-  if (typeof value === 'number' && !Number.isFinite(value)) return;
-  active.value.workflow = setRunningHubField(active.value.workflow, field.nodeId, field.fieldName, value);
-}
-function bind(field: WorkflowField, event: Event) {
-  const input = event.target as HTMLSelectElement;
-  if (input.value) active.value.workflow = setRunningHubField(active.value.workflow, field.nodeId, field.fieldName, input.value);
-  input.value = '';
 }
 function addKey() {
   const key = newRunningHubKey(`Key ${config.value.apiKeys.length + 1}`);
@@ -325,32 +303,12 @@ onBeforeUnmount(() => {
       <label class="bbi-switch-row"><span>生成自然语言</span><input v-model="active.naturalLanguage" type="checkbox" class="bbi-checkbox" /></label>
       <div class="rh-field"><span>输出节点</span><BbiSelect v-model="active.outputNodeId" :options="outputOptions" aria-label="输出图片节点" /></div>
       <p v-if="invalid" class="rh-warning" role="status">{{ invalid }}</p>
-      <p v-else class="rh-ok" role="status">配置就绪 · {{ fields.length }} 个节点参数</p>
+      <p v-else class="rh-ok" role="status">配置就绪</p>
       <details><summary>粘贴导入</summary>
         <textarea v-model="paste" class="bbi-input rh-code" rows="5" aria-label="待导入的工作流 JSON" spellcheck="false"></textarea>
         <button class="bbi-btn" :disabled="!paste.trim()" @click="importText(paste)"><Icon name="upload" />导入为新工作流</button>
       </details>
-      <div class="rh-node-editor">
-        <button class="rh-disclosure" type="button" :aria-expanded="nodesOpen" aria-controls="rh-node-fields" @click.stop="nodesOpen = !nodesOpen"><span>节点参数 · {{ fields.length }}</span><Icon name="chevron" :class="{ 'rh-open': nodesOpen }" /></button>
-        <div v-if="nodesOpen" id="rh-node-fields">
-        <p v-if="fieldError" class="rh-warning" role="status">{{ fieldError }}</p>
-        <div v-for="field in fields" :key="`${active.id}/${field.nodeId}/${field.fieldName}`" class="rh-node">
-          <label :for="`rh-${field.nodeId}-${field.fieldName}`">{{ field.nodeId }} · {{ field.title }} · {{ field.fieldName }}</label>
-          <div class="rh-node-controls">
-            <input v-if="typeof field.value === 'boolean'" :id="`rh-${field.nodeId}-${field.fieldName}`" type="checkbox" class="bbi-checkbox" :checked="field.value" @change="editField(field, $event)" />
-            <input v-else-if="typeof field.value === 'number'" :id="`rh-${field.nodeId}-${field.fieldName}`" type="number" step="any" class="bbi-input" :value="field.value" @change="editField(field, $event)" />
-            <textarea v-else :id="`rh-${field.nodeId}-${field.fieldName}`" class="bbi-input" rows="2" :value="field.value" @change="editField(field, $event)"></textarea>
-            <select class="bbi-input rh-bind" :aria-label="`${field.nodeId}.${field.fieldName} 参数绑定`" @change="bind(field, $event)">
-              <option v-for="p in placeholders" :key="p" :value="p">{{ p || '改为动态参数…' }}</option>
-            </select>
-          </div>
-          <label v-if="field.fieldName === 'image'" class="rh-reference">
-            <span>{{ uploading ? '上传中…' : '上传参考图' }}</span>
-            <input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading || !selectedKey?.key" :aria-label="`${field.nodeId} 上传参考图`" @change="uploadReference(field, $event)" />
-          </label>
-        </div>
-        </div>
-      </div>
+      <RunningHubParameters :preset="active" :upload-disabled="uploading || !selectedKey?.key" @update="active.workflow = $event" @configure="active.parameterControls = $event" @upload="uploadReference" />
       <details><summary>工作流 JSON</summary><textarea v-model="active.workflow" class="bbi-input rh-code" rows="12" spellcheck="false" aria-label="RunningHub 工作流 JSON"></textarea></details>
     </section>
     <section class="rh-section">
@@ -427,10 +385,6 @@ textarea { resize: vertical; }
 details { min-width: 0; }
 summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
 details[open] > :not(summary) { margin-top: 10px; }
-.rh-node { display: grid; gap: 6px; border-top: 1px solid var(--bbi-line); padding-top: 10px; }
-.rh-node > label { overflow-wrap: anywhere; font-size: 12px; }
-.rh-node-controls { display: grid; grid-template-columns: minmax(0, 1fr) 155px; align-items: start; gap: 8px; }
-.rh-bind { font-family: monospace; font-size: 12px; }
 .rh-warning { color: var(--bbi-danger, #b44b31); overflow-wrap: anywhere; font-size: 13px; }
 .rh-ok { color: var(--bbi-accent, #27845d); font-size: 13px; }
 .rh-preview { display: grid; gap: 8px; }
@@ -438,17 +392,11 @@ details[open] > :not(summary) { margin-top: 10px; }
 .rh-task { border-bottom: 1px solid var(--bbi-line); padding-bottom: 10px; overflow-wrap: anywhere; }
 .rh-task code { user-select: all; font-size: 12px; }
 .rh-task strong { font-size: 13px; }
-.rh-reference { font-size: 12px; }
-.rh-reference input { max-width: 100%; }
 .rh-key { display: grid; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--bbi-line); }
 .rh-key-name { flex: 1; max-width: 240px; }
 .rh-key-enable, .rh-key-limit { display: flex !important; align-items: center; gap: 8px; }
 .rh-key-limit input { width: 70px; }
-.rh-disclosure { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; padding: 8px 0; background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
-.rh-disclosure:focus-visible { outline: 2px solid var(--bbi-accent); }
-.rh-open { transform: rotate(180deg); }
 @media (max-width: 480px) {
   .rh-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
-  .rh-node-controls { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
