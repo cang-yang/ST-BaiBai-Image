@@ -63,6 +63,43 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
+  it.each([
+    ['text', false], ['tool', false], ['text', true], ['tool', true],
+  ] as const)('uses the selected %s submission mode for both the contract and checks (manga=%s)', async (output, manga) => {
+    const oldBackend = settings.defaultBackend, oldManga = settings.manga;
+    try {
+      settings.defaultBackend = 'comfyui';
+      settings.manga = { ...mangaDefaults(), enabled: manga };
+      const preset = newImagePreset();
+      preset.output = output;
+      preset.rules!.comfyThinking = { mode: 'custom', text: 'CHECK_STORY_AND_LETTERING' };
+      preset.rules!.mangaThinking = { mode: 'custom', text: 'CHECK_STORY_AND_LETTERING' };
+      const original = JSON.stringify(preset);
+      const options: AutoTagSettings = {
+        enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 1,
+        autoGenerate: true, prompts: prompts(),
+      };
+      const messages = await buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', autoTagProfile(preset), preset);
+      const contract = messages.find(m => m.purpose === 'contract')!.content;
+      const checks = messages.find(m => m.purpose === 'check')!.content;
+      const mode = output === 'tool' ? '当前输出方式：工具输出' : '当前输出方式：普通输出';
+      expect(contract).toContain(mode);
+      expect(checks).toContain(mode);
+      expect(checks).toContain('CHECK_STORY_AND_LETTERING');
+      expect(checks).toContain('仅供内部核对');
+      expect(contract).not.toContain('请先在 <thinking>');
+      expect(contract).not.toContain('除一个 <thinking> 块');
+      if (output === 'tool') {
+        expect(contract).toContain('只通过 submit_image_plan 工具提交一次');
+        expect(checks).toContain('只通过 submit_image_plan 工具提交一次');
+      } else {
+        expect(contract).toContain('不要调用工具');
+        expect(checks).toContain('最终结果必须包含且只能包含一个可解析的 JSON 对象');
+        expect(`${contract}\n${checks}`).not.toContain('submit_image_plan');
+      }
+      expect(JSON.stringify(preset)).toBe(original);
+    } finally { settings.defaultBackend = oldBackend; settings.manga = oldManga; }
+  });
   it('adds page-level storytelling only for the opted-in manga preset without duplicating the catalog', async () => {
     const oldBackend = settings.defaultBackend, oldManga = settings.manga;
     try {
@@ -346,7 +383,7 @@ describe('auto tag prompt', () => {
 
     expect(messages[0].content).toContain('附加规则');
     expect(messages.some(m => m.role === 'system' && m.content.includes('你是严谨的剧情画面规划与生图提示词编写员'))).toBe(true);
-    expect(messages.some(m => m.content.includes('除一个 <thinking> 块和一个 JSON 对象外'))).toBe(true);
+    expect(messages.find(m => m.purpose === 'contract')?.content).toContain('当前输出方式：普通输出');
     expect(messages.some(m => m.content.includes('最终结果必须包含且只能包含一个可解析的 JSON 对象'))).toBe(true);
     expect(messages.some(m => m.content.includes('images 数量必须在 0～3 之间'))).toBe(true);
     expect(messages.some(m => m.content.includes('没有值得绘制的可见瞬间时可以返回空数组'))).toBe(true);

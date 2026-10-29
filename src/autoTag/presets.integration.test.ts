@@ -47,6 +47,13 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('preset runner integration', () => {
+  it('disables the wire tool flag when the selected preset uses ordinary output', async () => {
+    settings.imagePresets.presets[0].output = 'text';
+    await requestFloorTags(0);
+    expect(mock.build.mock.calls[0][8].output).toBe('text');
+    expect(mock.request).toHaveBeenCalledOnce();
+    expect(mock.request.mock.calls[0][2].imagePlanTool).toBe(false);
+  });
   it.each([400, 401, 402, 403, 404, 405, 413, 415, 422])('does not repeat an HTTP %i rejection', async status => {
     settings.autoTag.retryCount = 5;
     mock.request.mockRejectedValueOnce(new ApiError('Request rejected', status));
