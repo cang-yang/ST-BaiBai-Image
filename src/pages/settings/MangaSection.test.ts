@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRenderer, defineComponent, ssrContextKey } from 'vue';
+import { createSSRApp } from 'vue';
+import { renderToString } from 'vue/server-renderer';
 import { applyMangaFrames, mangaDefaults, normalizeManga, parseCustomLayout, resolveLayouts } from '@/manga/layouts';
 vi.mock('@/pages/settings/MangaLayoutEditor.vue', () => ({ default: {} }));
 vi.mock('@/state/settings', async () => {
@@ -27,6 +29,17 @@ function section() {
 
 describe('可视化编辑保存',()=>{
   beforeEach(()=>{ settings.manga=mangaDefaults(); });
+  it('keeps enabled layouts compact and advanced configuration collapsed without changing data',async()=>{
+    settings.manga.selectionNotes='Preserve my custom selection note.';
+    const before=JSON.stringify(settings.manga);
+    const html=await renderToString(createSSRApp(Section));
+    expect(html).toContain('可选版式');
+    expect(html).toContain('高级版式设置');
+    expect(html).toContain('允许选用');
+    expect(html).not.toContain('启用漫画 Layout（模型只写');
+    expect(html).toContain('Preserve my custom selection note.');
+    expect(JSON.stringify(settings.manga)).toBe(before);
+  });
   it('更新同 ID 自定义版式并保留另一个方向，不新增副本',()=>{
     const portrait=[{position:'old',slots:{F:[-900,-500,900,500]}}];
     const landscape=[{position:'wide',slots:{F:[-500,-900,500,900]}}];

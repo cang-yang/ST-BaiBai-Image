@@ -36,10 +36,11 @@ describe('expressive manga acceptance', () => {
     expect(()=>assertMangaComposition(plan(page('balanced_1',1)),preset,true,manga)).not.toThrow();
     expect(()=>assertMangaComposition(plan(page('balanced_2',1,'F','object')),preset,true,manga)).not.toThrow();
   });
-  it('rejects a fully bounded batch even when captions claim breakout', () => {
+  it('accepts fully framed storytelling without imposing a breakout quota', () => {
     const p=page(); p.tag=p.tag.replace('A traveler.', 'Her hair breaks across the border.');
-    expect(()=>assertMangaComposition(plan(p),preset,true,manga)).toThrow(/未使用.*跨框/);
-    expect(()=>assertMangaComposition(plan(page('cross',1)),preset,true,manga)).toThrow(/未使用.*跨框/);
+    expect(()=>assertMangaComposition(plan(p),preset,true,manga)).not.toThrow();
+    expect(()=>assertMangaComposition(plan(page('cross',1)),preset,true,manga)).not.toThrow();
+    expect(()=>assertMangaComposition(plan(page()),preset,true,{...manga,custom:[]})).not.toThrow();
   });
   it('accepts an actually used crossing region, including numbered slots and panel names', () => {
     for (const ref of [2,'2','bottom']) for (const slot of ['S','S_2']) {
@@ -49,7 +50,6 @@ describe('expressive manga acceptance', () => {
   it('rejects disabled or invalid geometry rather than trusting a layout name', () => {
     expect(()=>assertMangaComposition(plan(page('cross')),preset,true,{...manga,disabled:['cross']})).toThrow(/版式/);
     expect(()=>assertMangaComposition(plan(page('cross',2,'missing')),preset,true,manga)).toThrow(/槽位/);
-    expect(()=>assertMangaComposition(plan(page()),preset,true,{...manga,custom:[]})).toThrow(/跨框.*版式/);
   });
   it('uses the real slanted outline and does not rewrite the plan', () => {
     const slanted = structuredClone(custom);
@@ -64,7 +64,9 @@ describe('expressive manga acceptance', () => {
       const detached = structuredClone(custom);
       detached.portrait![1].slots.S = box;
       delete detached.portrait![1].slots.S_2;
-      expect(()=>assertMangaComposition(plan(page('cross')),preset,true,{...manga,custom:[detached]})).toThrow(/跨框/);
+      const compiled=JSON.parse(applyMangaFrames(page('cross').tag,{...manga,custom:[detached]},custom.canvas!));
+      expect(compiled.items[0].caption).not.toContain('not clipped');
+      expect(compiled.summary.caption).not.toContain('occludes the frame line and white gutter');
     }
   });
   it('retains text order across separate regions without rewriting lettering', () => {
@@ -82,7 +84,7 @@ describe('expressive manga acceptance', () => {
     await expect(withMangaTextCorrection([], 'test', undefined, async (_m,s,validate)=>{
       sources.push(s); validate(String(++count)); return '';
     },raw=>{
-      if(raw==='1') assertMangaComposition(plan(page()),preset,true,manga);
+      if(raw==='1') assertMangaComposition(plan(page('cross',2,'missing')),preset,true,manga);
       throw new MangaTextError('文字缺失');
     })).rejects.toBeInstanceOf(MangaTextCorrectionError);
     expect(count).toBe(2);
@@ -91,12 +93,14 @@ describe('expressive manga acceptance', () => {
 });
 
 describe('composition selection brief', () => {
-  it('exposes enabled capabilities and recent IDs without mandating one layout', () => {
+  it('guides a coherent page without repeating the layout catalog or requiring effects', () => {
     const brief=buildCompositionBrief({...manga,disabled:['balanced_1']},'portrait',['two_then_large','two_then_large']);
-    expect(brief).toContain('跨框主体');
-    expect(brief).toContain('cross');
+    expect(brief).toContain('整页');
+    expect(brief).toContain('不强制出框');
     expect(brief).toContain('two_then_large → two_then_large');
     expect(brief).not.toContain('balanced_1');
+    expect(brief).not.toContain('portrait/cross');
+    expect(brief).not.toContain('至少使用一处');
     expect(brief).toContain('不是随机轮换');
     expect(brief).toContain('字区');
   });

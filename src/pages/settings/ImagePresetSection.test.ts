@@ -48,6 +48,7 @@ afterEach(() => {
 describe('preset section initial setup', () => {
   it('edits entries with the themed picker without a duplicate content directory', async () => {
     const preset = newImagePreset();
+    preset.format = 'moss_layout';
     preset.entries[0].name = 'A named creative entry';
     settings.imagePresets = { activeId: preset.id, presets: [preset], directChannels: [] };
     const originalSetup = ImagePresetSection.setup!;
@@ -66,6 +67,11 @@ describe('preset section initial setup', () => {
     expect(html).toContain('A named creative entry');
     expect(html).toContain('规范与检查');
     expect(html).toContain('输出与变量');
+    const creativePanel = html.slice(html.indexOf('id="ip-panel-content"'), html.indexOf('id="ip-panel-rules"'));
+    expect(creativePanel).toContain('漫画表现');
+    expect(creativePanel).toContain('生动叙事 · 不强制出框');
+    expect(html).not.toContain('>叙事出框</option>');
+    expect(html).toContain('<details class="ip-effective"');
   });
 
   it('runs the real client setup before a draft exists', () => {

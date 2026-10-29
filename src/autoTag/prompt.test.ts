@@ -63,7 +63,7 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
-  it('adds capability-based composition selection only for the opted-in manga preset', async () => {
+  it('adds page-level storytelling only for the opted-in manga preset without duplicating the catalog', async () => {
     const oldBackend = settings.defaultBackend, oldManga = settings.manga;
     try {
       settings.defaultBackend = 'comfyui';
@@ -72,13 +72,14 @@ describe('auto tag prompt', () => {
       const options: AutoTagSettings = { enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 1, autoGenerate: true, prompts: prompts() };
       const build = () => buildAutoTagMessages(context(), 1, options, null, undefined, undefined, '', autoTagProfile(preset), preset);
       const messages = (await build()).map(m => m.content).join('\n');
-      expect(messages).toContain('叙事构图：按剧情选择，不固定格数');
-      expect(messages).toContain('跨框主体');
+      expect(messages).toContain('整页叙事：连贯、生动、有主次');
+      expect(messages).toContain('不强制出框');
+      expect(messages.match(/【版式清单与挑选】/g)).toHaveLength(1);
       expect(messages).not.toContain('portrait/two_then_large');
       preset.mangaComposition = 'auto';
-      expect((await build()).map(m => m.content).join('\n')).not.toContain('叙事构图：');
+      expect((await build()).map(m => m.content).join('\n')).not.toContain('【整页叙事：');
       preset.mangaComposition = 'expressive'; settings.manga.enabled = false;
-      expect((await build()).map(m => m.content).join('\n')).not.toContain('叙事构图：');
+      expect((await build()).map(m => m.content).join('\n')).not.toContain('【整页叙事：');
     } finally { settings.defaultBackend = oldBackend; settings.manga = oldManga; }
   });
   it('injects required narrative lettering only for an opted-in manga preset', async () => {

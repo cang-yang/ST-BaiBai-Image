@@ -21,6 +21,7 @@ const draft = ref('');
 const editing = ref('');
 const error = ref('');
 const note = ref('');
+const query = ref('');
 const quickOpen = ref(false);
 const quickSource = ref('');
 const quickEditingId = ref('');
@@ -113,6 +114,8 @@ const rows = computed<Row[]>(() => {
 });
 
 const activeCount = computed(() => rows.value.filter(row => !row.disabled).length);
+const visibleRows = computed(() => rows.value.filter(row =>
+  `${row.label} ${row.id} ${row.usage}`.toLowerCase().includes(query.value.trim().toLowerCase())));
 const builtins = new Set(ORIENTATIONS.flatMap(builtinIds));
 
 function onUsageChange(id: string, event: Event): void {
@@ -252,17 +255,61 @@ function resetBuiltin(id: string): void {
   <div class="bbi-manga">
     <label class="bbi-manga-row">
       <input v-model="settings.manga.enabled" type="checkbox" class="bbi-checkbox" />
-      <span>启用漫画 Layout（模型只写版式与槽位，坐标由插件查表注入）</span>
+      <span>启用漫画排版</span>
     </label>
-    <p class="bbi-manga-hint">
-      关闭时完全走原本的生图配置：不追加漫画协议，也不改写提示词里的坐标。启用后提示词只带版式清单，
-      不再带坐标表——新版式加进这里，下一次请求就会出现在清单里，不需要改提示词。
-    </p>
-    <p class="bbi-manga-hint">当前可用版式 {{ activeCount }} / {{ rows.length }}。</p>
+    <div class="bbi-manga-item-head">
+      <strong>可选版式</strong>
+      <span class="bbi-manga-meta">{{ activeCount }} / {{ rows.length }} 允许选用</span>
+    </div>
+    <input v-model="query" class="bbi-input" type="search" aria-label="搜索漫画版式" placeholder="搜索版式名称或用途" />
     <button v-if="settings.manga.deleted.length" type="button" class="bbi-manga-btn" @click="restoreDeleted">恢复已删除的默认版式（{{ settings.manga.deleted.length }}）</button>
 
+    <div v-for="row in visibleRows" :key="row.id" class="bbi-manga-item">
+      <div class="bbi-manga-item-head">
+        <label class="bbi-manga-row bbi-manga-choice">
+          <input type="checkbox" class="bbi-checkbox" :checked="!row.disabled" :aria-label="`允许选用 ${row.label}`" @change="toggleDisabled(row.id)" />
+          <span class="bbi-manga-label">{{ row.label }}</span>
+        </label>
+        <span class="bbi-manga-meta">竖 {{ row.portrait }} 格 · 横 {{ row.landscape }} 格{{ row.custom ? ' · 自定义' : '' }}</span>
+      </div>
+      <p v-if="row.usage" class="bbi-manga-hint">{{ row.usage }}</p>
+      <details class="bbi-manga-details">
+        <summary>编辑版式</summary>
+        <code>{{ row.id }}</code>
+        <span v-if="settings.manga.custom.find(item => item.id === row.id)?.canvas" class="bbi-manga-meta">{{ settings.manga.custom.find(item => item.id === row.id)?.canvas?.width }}×{{ settings.manga.custom.find(item => item.id === row.id)?.canvas?.height }}</span>
+        <input
+          class="bbi-input bbi-manga-usage"
+          :value="row.usage"
+          :aria-label="`${row.label}用途`"
+          placeholder="版式用途"
+          @change="onUsageChange(row.id, $event)"
+        />
+        <div class="bbi-manga-item-actions">
+          <button type="button" class="bbi-manga-btn" @click="openQuick(row.id)">可视化编辑</button>
+          <button type="button" class="bbi-manga-btn" @click="editing === row.id ? cancel() : startEdit(row.id)">{{ editing === row.id ? '收起 JSON' : '编辑 JSON' }}</button>
+          <button v-if="row.custom && builtins.has(row.id)" type="button" class="bbi-manga-btn" @click="resetBuiltin(row.id)">恢复内置</button>
+          <button type="button" class="bbi-manga-btn" @click="deleteLayout(row.id)">删除</button>
+        </div>
+        <div v-if="editing === row.id" :id="`bbi-manga-editor-${row.id}`" class="bbi-manga-editor">
+          <textarea v-model="draft" class="bbi-input bbi-manga-code" aria-label="版式 JSON" spellcheck="false"></textarea>
+          <div class="bbi-manga-item-actions">
+            <button type="button" class="bbi-manga-btn" @click="save">保存</button>
+            <button type="button" class="bbi-manga-btn" @click="cancel">取消</button>
+          </div>
+          <p v-if="error" class="bbi-manga-error" role="alert">{{ error }}</p>
+        </div>
+      </details>
+    </div>
+    <p v-if="!visibleRows.length" class="bbi-manga-hint" role="status">没有匹配的版式</p>
+    <div class="bbi-manga-item-actions">
+      <button type="button" class="bbi-manga-btn" @click="openQuick()">快捷自定义</button>
+      <button type="button" class="bbi-manga-btn" @click="startNew">新增版式（JSON）</button>
+    </div>
+
+    <details class="bbi-manga-details bbi-manga-advanced">
+    <summary>高级版式设置</summary>
     <div class="bbi-manga-row">
-      <label for="bbi-manga-bleed">出框基准（px）</label>
+      <label for="bbi-manga-bleed">旧版 X 槽位扩展（px）</label>
       <input
         id="bbi-manga-bleed"
         class="bbi-input bbi-manga-bleed"
@@ -272,17 +319,14 @@ function resetBuiltin(id: string): void {
         step="4"
         v-model.number="settings.manga.bleed"
       />
-      <span class="bbi-manga-meta">2 格 ×1.25 · 3 格 ×1 · 4 格 ×0.8 · 5 格以上 ×0.6</span>
     </div>
 
     <div class="bbi-manga-editor">
-      <p class="bbi-manga-hint">
-        版式选择说明：整段拼入提示词末尾，用来补充说明你想要选择的版式。
-      </p>
-      <textarea v-model="settings.manga.selectionNotes" class="bbi-input bbi-manga-notes" spellcheck="false" placeholder="留空则只输出插件生成的清单"></textarea>
+      <label for="bbi-manga-notes">旧版版式选择说明（可留空）</label>
+      <textarea id="bbi-manga-notes" v-model="settings.manga.selectionNotes" class="bbi-input bbi-manga-notes" spellcheck="false"></textarea>
     </div>
 
-    <div class="bbi-manga-editor bbi-manga-item">
+    <div class="bbi-manga-editor">
       <strong>批量修改画布大小</strong>
       <div class="bbi-manga-item-actions">
         <label>宽度 <input v-model.number="batchWidth" class="bbi-input bbi-manga-size" type="number" min="64" max="8192" step="2" /></label>
@@ -294,51 +338,7 @@ function resetBuiltin(id: string): void {
       <p v-if="resizeBackup" class="bbi-manga-hint">修改或新增其他版式后，撤销本次调整按钮将失效。</p>
       <p v-if="batchError" class="bbi-manga-error" role="alert">{{ batchError }}</p>
     </div>
-
-    <div v-for="row in rows" :key="row.id" class="bbi-manga-item">
-      <div class="bbi-manga-item-head">
-        <code>{{ row.id }}</code>
-        <span class="bbi-manga-label">{{ row.label }}</span>
-        <span class="bbi-manga-meta">竖 {{ row.portrait }} 格 · 横 {{ row.landscape }} 格{{ row.custom ? ' · 自定义' : '' }}</span>
-        <span v-if="settings.manga.custom.find(item => item.id === row.id)?.canvas" class="bbi-manga-meta">{{ settings.manga.custom.find(item => item.id === row.id)?.canvas?.width }}×{{ settings.manga.custom.find(item => item.id === row.id)?.canvas?.height }}</span>
-      </div>
-      <input
-        class="bbi-input bbi-manga-usage"
-        :value="row.usage"
-        :placeholder="'这套版式适合什么节拍（留空则模型只能靠格数猜）'"
-        @change="onUsageChange(row.id, $event)"
-      />
-      <div class="bbi-manga-item-actions">
-        <label class="bbi-manga-mini">
-          <input type="checkbox" class="bbi-checkbox" :checked="!row.disabled" @change="toggleDisabled(row.id)" />
-          启用
-        </label>
-        <button
-          type="button"
-          class="bbi-manga-btn"
-          @click="editing === row.id ? cancel() : startEdit(row.id)"
-        >
-          {{ editing === row.id ? '收起' : row.custom ? '编辑 / 覆盖' : '改写为自定义' }}
-        </button>
-        <button type="button" class="bbi-manga-btn" @click="openQuick(row.id)">可视化编辑</button>
-        <button v-if="row.custom && builtins.has(row.id)" type="button" class="bbi-manga-btn" @click="resetBuiltin(row.id)">恢复内置</button>
-        <button type="button" class="bbi-manga-btn" @click="deleteLayout(row.id)">删除</button>
-      </div>
-
-      <div v-if="editing === row.id" :id="`bbi-manga-editor-${row.id}`" class="bbi-manga-editor">
-        <textarea v-model="draft" class="bbi-input bbi-manga-code" spellcheck="false"></textarea>
-        <div class="bbi-manga-item-actions">
-          <button type="button" class="bbi-manga-btn" @click="save">保存</button>
-          <button type="button" class="bbi-manga-btn" @click="cancel">取消</button>
-        </div>
-        <p v-if="error" class="bbi-manga-error">{{ error }}</p>
-      </div>
-    </div>
-
-    <div class="bbi-manga-item-actions">
-      <button type="button" class="bbi-manga-btn" @click="openQuick()">快捷自定义</button>
-      <button type="button" class="bbi-manga-btn" @click="startNew">新增版式（JSON）</button>
-    </div>
+    </details>
     <p v-if="note" class="bbi-manga-hint" role="status">{{ note }}</p>
     <MangaLayoutEditor v-if="quickOpen" :sources="quickSources" :existing-ids="existingIds" :initial-key="quickSource" :editing-id="quickEditingId" @close="quickOpen=false" @save="saveQuick" />
 
@@ -357,7 +357,6 @@ function resetBuiltin(id: string): void {
       <p v-if="error" class="bbi-manga-error">{{ error }}</p>
     </div>
 
-    <p v-if="note" class="bbi-manga-hint">{{ note }}</p>
   </div>
 </template>
 
@@ -372,6 +371,7 @@ function resetBuiltin(id: string): void {
   align-items: center;
   gap: 8px;
   font-size: 13px;
+  flex-wrap: wrap;
 }
 .bbi-manga-hint {
   margin: 0;
@@ -385,7 +385,7 @@ function resetBuiltin(id: string): void {
   color: #b3261e;
 }
 .bbi-manga-item {
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--bbi-line);
   border-radius: 8px;
   padding: 8px 10px;
   display: flex;
@@ -402,7 +402,15 @@ function resetBuiltin(id: string): void {
 .bbi-manga-item-head code,
 .bbi-manga-label {
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
+.bbi-manga-choice { flex: 1; min-width: 0; cursor: pointer; }
+.bbi-manga-details { min-width: 0; font-size: 12px; }
+.bbi-manga-details > summary { cursor: pointer; color: var(--bbi-ink-muted); padding: 6px 0; }
+.bbi-manga-details > :not(summary) { margin-top: 8px; }
+.bbi-manga-details code { overflow-wrap: anywhere; }
+.bbi-manga-advanced { border-top: 1px solid var(--bbi-line); padding-top: 8px; }
+.bbi-manga :focus-visible { outline: 2px solid var(--bbi-accent); outline-offset: 2px; }
 .bbi-manga-meta {
   font-size: 12px;
   opacity: 0.7;
@@ -423,8 +431,9 @@ function resetBuiltin(id: string): void {
   font-size: 12px;
   padding: 3px 10px;
   border-radius: 6px;
-  border: 1px solid rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--bbi-line);
   background: transparent;
+  color: var(--bbi-ink);
   cursor: pointer;
 }
 .bbi-manga-size { width: 100px; }
@@ -435,6 +444,7 @@ function resetBuiltin(id: string): void {
   flex-direction: column;
   gap: 8px;
 }
+.bbi-manga .bbi-input { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .bbi-manga-usage {
   font-size: 12px;
 }

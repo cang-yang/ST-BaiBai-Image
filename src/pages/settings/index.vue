@@ -31,6 +31,28 @@ import {
 import { checkForUpdate, performUpdate, updateState } from '@/update';
 import { computed, onMounted, ref } from 'vue';
 
+const settingsGroups = [
+  { id: 'generation', label: '生成设置' },
+  { id: 'reference', label: '参考与过滤' },
+  { id: 'appearance', label: '界面与存储' },
+];
+const settingsGroup = ref('generation');
+const activePresetName = computed(() =>
+  settings.imagePresets.presets.find(preset => preset.id === settings.imagePresets.activeId)?.name ?? '内置默认');
+const activeChannelName = computed(() =>
+  settings.channels.find(channel => channel.id === settings.assignments.tagGen)?.name || '跟随主 API');
+function settingsTabKey(event: KeyboardEvent, index: number): void {
+  const length = settingsGroups.length;
+  const next = event.key === 'ArrowRight' ? (index + 1) % length
+    : event.key === 'ArrowLeft' ? (index + length - 1) % length
+    : event.key === 'Home' ? 0 : event.key === 'End' ? length - 1 : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  settingsGroup.value = settingsGroups[next].id;
+  (event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
+}
+
 const NAV_OPTIONS: { value: NavPosition; label: string }[] = [
   { value: 'auto', label: '自动' },
   { value: 'top', label: '顶部' },
@@ -458,9 +480,12 @@ async function confirmUpdate() {
       </button>
     </div>
 
+    <div class="bbi-settings-tabs" role="tablist" aria-label="设置分类">
+      <button v-for="(group, index) in settingsGroups" :id="`bbi-settings-tab-${group.id}`" :key="group.id" type="button" role="tab" :aria-selected="settingsGroup === group.id" :aria-controls="`bbi-settings-${group.id}`" :tabindex="settingsGroup === group.id ? 0 : -1" @click="settingsGroup = group.id" @keydown="settingsTabKey($event, index)">{{ group.label }}</button>
+    </div>
     <div class="bbi-sections">
-      <!-- 基本设置:主题 / 导航 / 入口 / 悬浮球等界面项,置于首位 -->
-      <Collapsible title="基本设置" :open="false">
+      <div v-show="settingsGroup === 'appearance'" id="bbi-settings-appearance" class="bbi-settings-group" role="tabpanel" aria-labelledby="bbi-settings-tab-appearance">
+      <Collapsible title="界面与存储" :open="true">
         <div class="bbi-select-row">
           <span class="bbi-field-label">主题</span>
           <BbiSelect v-model="themeSel" :options="THEMES" aria-label="主题" />
@@ -469,11 +494,6 @@ async function confirmUpdate() {
         <div class="bbi-select-row">
           <span class="bbi-field-label">导航位置</span>
           <BbiSelect v-model="navSel" :options="NAV_OPTIONS" aria-label="导航位置" />
-        </div>
-
-        <div class="bbi-select-row">
-          <span class="bbi-field-label">出图后端</span>
-          <BbiSelect v-model="backendSel" :options="BACKEND_OPTIONS" aria-label="出图后端" />
         </div>
 
         <label class="bbi-switch-row">
@@ -552,18 +572,34 @@ async function confirmUpdate() {
           </div>
         </Collapsible>
       </Collapsible>
+      </div>
 
+      <div v-show="settingsGroup === 'generation'" id="bbi-settings-generation" class="bbi-settings-group" role="tabpanel" aria-labelledby="bbi-settings-tab-generation">
+      <dl class="bbi-settings-current" aria-label="当前生成配置">
+        <dt>配图预设</dt><dd>{{ activePresetName }}</dd>
+        <dt>提示词 API</dt><dd>{{ activeChannelName }}</dd>
+        <dt>生成方式</dt><dd>{{ settings.autoTag.enabled ? settings.autoTag.autoGenerate ? '自动配图并生成图片' : '自动配图，手动生成图片' : '手动配图' }}</dd>
+      </dl>
+      <div class="bbi-select-row">
+        <span class="bbi-field-label">出图后端</span>
+        <BbiSelect v-model="backendSel" :options="BACKEND_OPTIONS" aria-label="出图后端" />
+      </div>
+      <Collapsible title="正文配图预设" :open="false">
+        <ImagePresetSection />
+      </Collapsible>
       <!-- 副 API:生成画图 tag 用的模型渠道(与柏宝书共享渠道列表) -->
-      <Collapsible title="副 API" :open="false">
+      <Collapsible title="提示词 API" :open="false">
         <!-- 任务指派:只有一个任务——生成 tag -->
         <div class="bbi-field bbi-assign">
           <div class="bbi-assign-row">
-            <span class="bbi-field-label">生成 tag 使用</span>
+            <span class="bbi-field-label">图片提示词使用</span>
             <BbiSelect v-model="tagGenSel" :options="TAG_GEN_OPTIONS" aria-label="生成 tag 使用的 API 渠道" />
           </div>
         </div>
         <p class="bbi-field-hint">不指派渠道时跟随主 API:直接借用你主界面当前正在用的 API(聊天补全/文本补全)来生成画图 tag,无需额外配置。想用不同模型再在下方建副渠道指派。渠道列表与柏宝书共享,任一端改动都会自动同步到另一端。</p>
 
+        <details class="bbi-session-settings">
+        <summary>高级会话设置</summary>
         <label class="bbi-switch-row">
           <span class="bbi-field-label">DSH 持久 Agent 会话</span>
           <input v-model="settings.autoTag.dshSession" type="checkbox" class="bbi-checkbox" aria-label="DSH 持久 Agent 会话" />
@@ -576,6 +612,7 @@ async function confirmUpdate() {
           </div>
           <p v-if="dshBusy || dshNotice" class="bbi-field-hint" role="status">{{ dshBusy ? '正在请求 DSH…' : dshNotice }}</p>
         </template>
+        </details>
 
         <hr class="bbi-rule" />
 
@@ -598,9 +635,9 @@ async function confirmUpdate() {
         <p v-else class="bbi-field-hint">还没有渠道。点「添加渠道」配置生成 tag 要用的 API。</p>
       </Collapsible>
 
-      <Collapsible title="自动生成 tag" :open="false">
+      <Collapsible title="自动配图" :open="false">
         <label class="bbi-switch-row">
-          <span class="bbi-field-label">自动生成 tag</span>
+          <span class="bbi-field-label">正文完成后自动配图</span>
           <input v-model="settings.autoTag.enabled" type="checkbox" class="bbi-checkbox" />
         </label>
         <p class="bbi-field-hint">AI 正文生成后自动判断该楼是否需要插图,需要就写入生图 tag。</p>
@@ -666,12 +703,11 @@ async function confirmUpdate() {
       </Collapsible>
 
       <!-- 排除角色:名单与柏宝书共享(见 state/settings.ts 的共享存储),任一端改动自动同步 -->
-      <Collapsible title="漫画 Layout" :open="false">
+      <Collapsible title="漫画版式" :open="false">
         <MangaSection />
       </Collapsible>
-      <Collapsible title="正文配图预设" :open="false">
-        <ImagePresetSection />
-      </Collapsible>
+      </div>
+      <div v-show="settingsGroup === 'reference'" id="bbi-settings-reference" class="bbi-settings-group" role="tabpanel" aria-labelledby="bbi-settings-tab-reference">
       <Collapsible title="生图世界书" :open="false">
         <ImageWorldbookSection />
       </Collapsible>
@@ -779,6 +815,7 @@ async function confirmUpdate() {
         <p v-else class="bbi-field-hint">暂无自定义标签。仅内置清洗(思维链、注释、物品旁注等)生效。</p>
       </Collapsible>
 
+      </div>
     </div>
 
     <!-- ===== 排除角色弹窗:搜索 + 勾选列表 ===== -->
@@ -1026,6 +1063,16 @@ async function confirmUpdate() {
 </template>
 
 <style scoped>
+.bbi-settings-tabs { display: flex; border-bottom: 1px solid var(--bbi-line); margin-bottom: 16px; }
+.bbi-settings-tabs button { flex: 1; min-width: 0; min-height: 40px; padding: 8px 4px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--bbi-ink-muted); font: inherit; font-size: 13px; cursor: pointer; overflow-wrap: anywhere; }
+.bbi-settings-tabs button[aria-selected=true] { color: var(--bbi-accent); border-bottom-color: var(--bbi-accent); font-weight: 600; }
+.bbi-settings-tabs button:focus-visible { outline: 2px solid var(--bbi-accent); outline-offset: -2px; }
+.bbi-settings-group { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bbi-settings-current { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px 12px; margin: 0; padding: 4px 0 12px; border-bottom: 1px solid var(--bbi-line); font-size: 13px; line-height: 1.5; }
+.bbi-settings-current dt { color: var(--bbi-ink-muted); }
+.bbi-settings-current dd { margin: 0; overflow-wrap: anywhere; }
+.bbi-session-settings { font-size: 13px; }
+.bbi-session-settings > summary { cursor: pointer; color: var(--bbi-ink-muted); padding: 8px 0; }
 .bbi-ver-row {
   display: inline-flex;
   align-items: center;

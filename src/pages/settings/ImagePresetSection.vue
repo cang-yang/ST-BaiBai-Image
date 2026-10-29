@@ -234,7 +234,7 @@ async function inspect(send: boolean): Promise<void> {
       const requestOptions = { ...opts, source, validate };
       return channel ? requestCompletion(channel, requestMessages, requestOptions) : requestViaMainApi(requestMessages, requestOptions);
     }, opts.validate);
-    notice.value = '测试通过：已取得有效配图计划，未生成图片、未修改正文';
+    notice.value = '计划校验通过；尚未生成图片，不代表实图质量已验证';
   } catch (e) {
     if (controller.signal.aborted) error.value = '测试已取消';
     else fail(e);
@@ -270,16 +270,20 @@ async function inspect(send: boolean): Promise<void> {
     <p v-if="error" class="ip-error" role="alert">{{ error }}</p>
     <p v-if="notice" class="ip-status" role="status">{{ notice }}</p>
     <p v-if="preset?.description && !draft" class="ip-muted">{{ preset.description }}</p>
-    <div class="ip-effective" aria-label="本次生效配置">
-      <div class="ip-toolbar"><strong>{{ draft ? '草稿配置' : selected === config.activeId ? '当前生效配置' : '所选预设 · 尚未启用' }}</strong><span>{{ effectiveTarget.label }}</span></div>
+    <details class="ip-effective" aria-label="本次生效配置">
+      <summary>{{ draft ? '草稿配置' : selected === config.activeId ? '当前生效配置' : '所选预设 · 尚未启用' }} · {{ effectiveTarget.label }}</summary>
       <dl>
         <dt>画面要求</dt><dd>{{ displayed.entries.filter(e => e.enabled).length }} 个开启条目</dd>
         <dt>书写规范</dt><dd>{{ ruleModes[viewRules[effectiveTarget.spec].mode] }}</dd>
         <dt>检查指导</dt><dd>{{ ruleModes[viewRules[effectiveTarget.check].mode] }}</dd>
         <dt>前置规则</dt><dd>{{ ruleModes[viewRules.jailbreak.mode] }}</dd>
         <dt>插件固定要求</dt><dd>图片位置、数量、输出结构{{ effectiveTarget.value === 'manga' ? '、版式约束' : '' }}</dd>
+        <template v-if="effectiveTarget.value === 'manga'">
+          <dt>漫画文字</dt><dd>{{ displayed.mangaText === 'required' ? '必须有叙事文字' : '按剧情安排' }}</dd>
+          <dt>漫画表现</dt><dd>{{ displayed.mangaComposition === 'expressive' ? '生动叙事 · 不强制出框' : '按预设安排' }}</dd>
+        </template>
       </dl>
-    </div>
+    </details>
     <details v-if="(draft ?? preset)?.warnings.length" class="ip-warning" open>
       <summary>导入兼容性提醒</summary><ul><li v-for="warning in (draft ?? preset)?.warnings" :key="warning">{{ warning }}</li></ul>
     </details>
@@ -291,6 +295,10 @@ async function inspect(send: boolean): Promise<void> {
       </div>
       <div v-show="editorTab === 'content'" id="ip-panel-content" role="tabpanel" aria-labelledby="ip-tab-content">
       <h3 tabindex="-1">画面要求</h3>
+      <div v-if="effectiveTarget.value === 'manga'" class="ip-creative">
+        <label id="ip-lettering" tabindex="-1">漫画文字<select v-model="draft.mangaText" class="bbi-input" aria-label="漫画文字策略"><option value="auto">按剧情安排</option><option value="required">必须有叙事文字</option></select></label>
+        <label>漫画表现<select v-model="draft.mangaComposition" class="bbi-input" aria-label="漫画构图策略"><option value="auto">按预设安排</option><option value="expressive">生动叙事 · 不强制出框</option></select></label>
+      </div>
       <div class="ip-toolbar"><strong>提示词条目 · {{ draft.entries.filter(e => e.enabled).length }} / {{ draft.entries.length }} 已开启</strong><button class="bbi-btn bbi-btn-sm" @click="addEntry"><Icon name="plus" />添加条目</button></div>
       <p v-if="!draft.entries.length" class="ip-muted">暂无额外画面要求</p>
       <input v-if="draft.entries.length" v-model="search" class="bbi-input" type="search" placeholder="搜索条目" aria-label="搜索预设条目" />
@@ -334,8 +342,6 @@ async function inspect(send: boolean): Promise<void> {
         <h3 tabindex="-1">输出与变量</h3>
         <label>输出方式<select v-model="draft.output" class="bbi-input" aria-label="预设输出方式"><option value="text">普通文本 · JSON 计划</option><option value="tool">工具输出 · 需要支持工具的副 API</option></select></label>
         <label>工作流提示词格式<select :value="draft.format ?? 'auto'" class="bbi-input" aria-label="工作流提示词格式" @change="draft.format = ($event.target as HTMLSelectElement).value as 'auto' | 'moss_layout'"><option value="auto">跟随后端与漫画开关</option><option value="moss_layout">MOSS 原生 Layout</option></select></label>
-        <label id="ip-lettering" tabindex="-1">漫画文字{{ effectiveTarget.value !== 'manga' ? ' · 当前未启用漫画' : '' }}<select v-model="draft.mangaText" class="bbi-input" aria-label="漫画文字策略"><option value="auto">按剧情安排</option><option value="required">必须有叙事文字</option></select></label>
-        <label>漫画构图<select v-model="draft.mangaComposition" class="bbi-input" aria-label="漫画构图策略"><option value="auto">按剧情安排</option><option value="expressive">叙事出框</option></select></label>
         <PresetRuleEditor v-if="draft.rules" id="ip-prefix" tabindex="-1" :rule="draft.rules.jailbreak" rule-key="jailbreak" title="通用前置规则" />
         <h3 id="ip-custom-variables" tabindex="-1">自定义变量 · {{ variables.length }} 个</h3>
         <div v-for="(variable, index) in variables" :key="index" class="ip-variable">
@@ -409,6 +415,7 @@ async function inspect(send: boolean): Promise<void> {
 .ip-status { color: var(--bbi-accent, #2d9180); }
 .ip-muted { opacity: .72; font-size: 12px; }
 .ip-text { resize: vertical; min-height: 150px; }
+.ip-creative { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .ip-effective { border-block: 1px solid var(--bbi-line); padding: 10px 0; font-size: 12px; }
 .ip-effective dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 6px; margin: 10px 0 0; }
 .ip-effective dt { color: var(--bbi-ink-muted); }
@@ -426,6 +433,7 @@ async function inspect(send: boolean): Promise<void> {
 .ip-variables dt { font-family: monospace; overflow-wrap: anywhere; }
 .ip-variables dd { margin: 0; }
 @media (max-width: 460px) {
+  .ip-creative { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .ip-variable { grid-template-columns: minmax(0, 1fr) 32px; }
   .ip-variable textarea { grid-column: 1; grid-row: 2; }
   .ip-variable button { grid-column: 2; grid-row: 1 / 3; }
