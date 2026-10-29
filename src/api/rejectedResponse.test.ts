@@ -45,6 +45,32 @@ it('distinguishes a pending transport failure from a rejected model plan', async
   expect(record.response).toBe('');
 });
 
+it('reports reasoning and plan characters while the response is still streaming', async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } });
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(body, {
+    headers: { 'Content-Type': 'text/event-stream' },
+  })));
+  const pending = requestCompletion({ ...channel, stream: true }, [{ role: 'user', content: 'scene' }]);
+  const send = (delta: object) => stream.enqueue(new TextEncoder().encode(
+    `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`,
+  ));
+  try {
+    send({ reasoning_content: 'Planning.' });
+    await vi.waitFor(() => {
+      expect(records[0]).toMatchObject({ status: 'running', phase: 'streaming', reasoningChars: 9, receivedChars: 0 });
+    });
+    send({ content: '{"images":[]}' });
+    await vi.waitFor(() => {
+      expect(records[0]).toMatchObject({ status: 'running', receivedChars: 13, reasoningChars: 9 });
+    });
+  } finally {
+    stream.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+    stream.close();
+    await pending;
+  }
+});
+
 it('keeps a non-JSON intermediary response with its received HTTP status', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>Gateway timeout</html>')));
   await expect(requestCompletion(channel, [{ role: 'user', content: 'scene' }])).rejects.toThrow(/JSON/);
@@ -98,6 +124,7 @@ it('keeps the SSE error event even when no final content was emitted', async () 
   const record = records[0] as LlmRecord;
   expect(record.response).toContain('Gateway Time-out');
   expect(record.response).toContain('test-id');
-  expect(record.phase).toBe('response');
+  expect(record.phase).toBe('streaming');
+  expect(record.reasoningChars).toBe(18);
   expect(record.status).toBe('error');
 });

@@ -1,4 +1,4 @@
-import { requestCompletion, requestViaMainApi } from '@/api/client';
+import { isPermanentApiError, requestCompletion, requestViaMainApi } from '@/api/client';
 import { snapshotPreset } from '@/presets/model';
 import { builtinImagePreset } from '@/presets/catalog';
 import { assertMangaText, MangaTextCorrectionError, withMangaTextCorrection } from '@/presets/mangaText';
@@ -408,7 +408,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         }
         lastError = error instanceof Error ? error.message : String(error);
         console.warn(`[柏宝绘] 第 ${floor} 楼第 ${attempt + 1}/${retries + 1} 次生成 tag 失败`, error);
-        if (error instanceof MangaTextCorrectionError) break;
+        if (error instanceof MangaTextCorrectionError || isPermanentApiError(error)) break;
       }
     }
     if (!plan) {

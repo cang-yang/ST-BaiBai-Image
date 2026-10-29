@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { settings } from '@/state/settings';
 import { newImagePreset } from '@/presets/model';
 import ImagePresetSection from './ImagePresetSection.vue';
+import * as st from '@/st/context';
+import * as api from '@/api/client';
+import * as prompt from '@/autoTag/prompt';
 
 const previousConfig = settings.imagePresets;
 const previousBackend = settings.defaultBackend;
@@ -43,9 +46,62 @@ afterEach(() => {
   settings.defaultBackend = previousBackend;
   settings.manga.enabled = previousManga;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('preset section initial setup', () => {
+  it('locally previews the retained story and marks an inactive preset without sending', async () => {
+    const active = newImagePreset(), selected = newImagePreset();
+    selected.name = 'Candidate preset';
+    settings.imagePresets = { activeId: active.id, presets: [active, selected], directChannels: [] };
+    vi.spyOn(st, 'getContext').mockReturnValue({
+      chat: [{ mes: '<thinking>Notes.</thinking>\nA traveler arrives.', is_user: false, is_system: false }],
+      chatMetadata: {}, name1: 'User', name2: 'Char',
+    } as any);
+    vi.spyOn(prompt, 'buildAutoTagMessages').mockResolvedValueOnce([{ role: 'user', content: 'compiled' }]);
+    const request = vi.spyOn(api, 'requestCompletion'), main = vi.spyOn(api, 'requestViaMainApi');
+    let state!: Record<string, any>;
+    const originalSetup = ImagePresetSection.setup!;
+    const component = {
+      ...ImagePresetSection,
+      setup(props: Parameters<typeof originalSetup>[0], context: Parameters<typeof originalSetup>[1]) {
+        state = originalSetup(props, context) as Record<string, any>;
+        state.selected.value = selected.id;
+        return state;
+      },
+    };
+    await renderToString(createSSRApp(component));
+    await state.inspect(false);
+    expect(state.error.value).toBe('');
+    expect(state.inputCheck.value).toMatchObject({
+      presetName: 'Candidate preset', active: false, paragraphs: 1, cleanedText: 'A traveler arrives.',
+    });
+    expect(request).not.toHaveBeenCalled();
+    expect(main).not.toHaveBeenCalled();
+  });
+  it('shows cleaned input and blocks paid tests before sending when no story remains', async () => {
+    vi.spyOn(st, 'getContext').mockReturnValue({
+      chat: [{ mes: '<thinking>Only private notes.</thinking>', is_user: false, is_system: false }],
+      chatMetadata: {}, name1: 'User', name2: 'Char',
+    } as any);
+    const request = vi.spyOn(api, 'requestCompletion');
+    const main = vi.spyOn(api, 'requestViaMainApi');
+    let state!: Record<string, any>;
+    const originalSetup = ImagePresetSection.setup!;
+    const component = {
+      ...ImagePresetSection,
+      setup(props: Parameters<typeof originalSetup>[0], context: Parameters<typeof originalSetup>[1]) {
+        state = originalSetup(props, context) as Record<string, any>;
+        return state;
+      },
+    };
+    await renderToString(createSSRApp(component));
+    await state.inspect(true);
+    expect(state.error.value).toContain('清洗后没有可用正文');
+    expect(state.inputCheck.value).toMatchObject({ originalChars: 40, paragraphs: 0, cleanedText: '' });
+    expect(request).not.toHaveBeenCalled();
+    expect(main).not.toHaveBeenCalled();
+  });
   it('edits entries with the themed picker without a duplicate content directory', async () => {
     const preset = newImagePreset();
     preset.format = 'moss_layout';

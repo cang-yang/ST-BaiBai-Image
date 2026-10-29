@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import Collapsible from '@/components/Collapsible.vue';
 import Icon from '@/components/Icon.vue';
@@ -9,6 +9,7 @@ import {
   cacheHitRate,
   records,
   roughTokens,
+  requestProgressLabel,
   type HistoryRecord,
   type LlmRecord,
 } from '@/state/history';
@@ -35,6 +36,14 @@ interface Segment {
 }
 
 const filter = ref<Filter>('all');
+const now = ref(Date.now());
+let clock: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  clock = setInterval(() => {
+    if (records.some(record => record.status === 'running')) now.value = Date.now();
+  }, 1000);
+});
+onBeforeUnmount(() => { if (clock) clearInterval(clock); });
 /** 弹窗里正在看的那一段(null = 关闭)。 */
 const viewing = ref<{ title: string; segment: Segment } | null>(null);
 
@@ -98,7 +107,7 @@ function cacheLabel(record: LlmRecord, compact = false): string {
 
 function requestFacts(record: LlmRecord): string[] {
   const transport = record.transport === 'direct' ? '浏览器直连' : record.transport === 'proxy' ? '酒馆转发' : record.transport === 'main' ? '跟随主 API' : '';
-  const phase = record.phase === 'validation' ? '已收到内容，校验配图计划' : record.phase === 'response' ? '已收到接口响应' : record.phase === 'request' ? '尚未收到接口响应' : '';
+  const phase = requestProgressLabel(record);
   return [transport, record.endpoint ?? '', record.httpStatus ? `HTTP ${record.httpStatus}` : '', phase].filter(Boolean);
 }
 
@@ -128,7 +137,7 @@ function inline(text: string): string {
 
 /** 展开区顶部那排事实标签。 */
 function facts(record: HistoryRecord): string[] {
-  const out = [subtitle(record), duration(record.durationMs), new Date(record.startedAt).toLocaleString()];
+  const out = [subtitle(record), duration(record.durationMs ?? Math.max(0, now.value - record.startedAt)), new Date(record.startedAt).toLocaleString()];
   if (record.kind === 'llm') {
     if (record.stream) out.push('流式');
     // 标题行那个数字是提示词 token(标题行地方紧,不带单位);这里补全口径。
@@ -151,7 +160,7 @@ function facts(record: HistoryRecord): string[] {
 function copyAll(record: HistoryRecord): void {
   const head = [
     `【${title(record)}】${subtitle(record)}`,
-    `状态：${statusLabel(record)}  耗时：${duration(record.durationMs)}`,
+    `状态：${statusLabel(record)}  耗时：${duration(record.durationMs ?? Math.max(0, now.value - record.startedAt))}`,
     record.kind === 'llm' && record.promptTokens !== null
       ? `提示词 token：${tokenLabel(record)}`
       : '',
@@ -219,12 +228,15 @@ function copyAll(record: HistoryRecord): void {
               {{ tokenLabel(record) }}
             </span>
             <span
-              v-if="record.kind === 'llm'"
+              v-if="record.kind === 'llm' && record.status !== 'running'"
               class="bbi-hist-tok"
               title="缓存读取 token ÷ 真实输入 token；仅展示上游返回的数据。未提供不等于 0%。"
             >{{ cacheLabel(record, true) }}</span>
             <span class="bbi-hist-time">{{ time(record.startedAt) }}</span>
             <span class="bbi-prompt-state" :class="`is-${record.status}`">{{ statusLabel(record) }}</span>
+            <span v-if="record.kind === 'llm' && record.status === 'running'" class="bbi-hist-progress" role="status">
+              {{ requestProgressLabel(record) }} · {{ duration(Math.max(0, now - record.startedAt)) }}
+            </span>
           </span>
         </template>
 
@@ -324,10 +336,19 @@ function copyAll(record: HistoryRecord): void {
    token 与状态药丸**永不收缩**——它们是这一行最该被读到的两个值。 */
 .bbi-hist-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   flex: 1 1 auto;
   min-width: 0;
+}
+.bbi-hist-progress {
+  flex: 1 0 100%;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--bbi-ink-muted);
+  overflow-wrap: anywhere;
 }
 /* 标题可收缩(min-width:0 是省略号生效的前提)。
    原先是 flex:0 0 auto 不可收缩,长标题会把后面的 token/状态整个挤出容器——

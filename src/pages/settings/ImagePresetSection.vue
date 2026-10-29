@@ -92,11 +92,12 @@ const removeTarget = ref<ImagePromptPreset>();
 const error = ref(''), notice = ref(''), testText = ref('');
 const busy = ref(false), result = ref(''), preview = ref<ChatMsg[]>([]);
 const checkResult = ref<RenderedPreset>();
+const inputCheck = ref<{ originalChars: number; paragraphs: number; cleanedText: string; presetName: string; active: boolean }>();
 let controller: AbortController | undefined;
 onBeforeUnmount(() => controller?.abort());
-watch(selected, () => { preview.value = []; checkResult.value = undefined; result.value = ''; error.value = ''; });
+watch(selected, () => { preview.value = []; checkResult.value = undefined; inputCheck.value = undefined; result.value = ''; error.value = ''; });
 watch([draft, variables, testText], () => {
-  if (!busy.value) { preview.value = []; checkResult.value = undefined; result.value = ''; }
+  if (!busy.value) { preview.value = []; checkResult.value = undefined; inputCheck.value = undefined; result.value = ''; }
 }, { deep: true });
 
 function fail(e: unknown): void { error.value = e instanceof Error ? e.message : String(e); }
@@ -190,7 +191,7 @@ function removeEntry(): void {
   entryId.value = draft.value.entries[0]?.id ?? '';
 }
 async function inspect(send: boolean): Promise<void> {
-  busy.value = true; error.value = ''; notice.value = ''; result.value = ''; preview.value = []; checkResult.value = undefined;
+  busy.value = true; error.value = ''; notice.value = ''; result.value = ''; preview.value = []; checkResult.value = undefined; inputCheck.value = undefined;
   controller = new AbortController();
   try {
     const chosen = current();
@@ -203,6 +204,13 @@ async function inspect(send: boolean): Promise<void> {
     }
     if (floor < 0) throw new Error('请先填写测试正文，或打开已有回复的聊天');
     const prepared = prepareTargetText(context.chat[floor].mes, settings.excludes.customStripTags);
+    inputCheck.value = {
+      originalChars: context.chat[floor].mes.length, paragraphs: prepared.segments.length,
+      cleanedText: prepared.segments.map(segment => segment.text).join('\n\n'),
+      presetName: chosen?.name ?? '内置默认',
+      active: (chosen?.id ?? '') === config.value.activeId || (!config.value.activeId && !draft.value),
+    };
+    if (!prepared.segments.length) throw new Error('清洗后没有可用正文，本次未发送请求。请检查“参考与过滤 → 自定义清洗标签”及正文中的思考、注释或正文边界标签。');
     const options = JSON.parse(JSON.stringify(settings.autoTag));
     const profile = autoTagProfile(chosen ?? builtinImagePreset());
     const mangaSnapshot = JSON.parse(JSON.stringify(settings.manga));
@@ -375,6 +383,11 @@ async function inspect(send: boolean): Promise<void> {
         <button class="bbi-btn bbi-btn-sm" :disabled="busy" @click="inspect(true)"><Icon name="plug" />测试副 API · 计费请求</button>
         <button v-if="busy" class="bbi-btn bbi-btn-sm" @click="controller?.abort()"><Icon name="close" />取消测试</button>
       </div>
+      <div v-if="inputCheck" class="ip-input-check" aria-label="本次实际输入">
+        <p><strong>{{ inputCheck.presetName }}</strong> · {{ draft ? '未保存草稿' : inputCheck.active ? '当前启用' : '仅测试，尚未启用' }}</p>
+        <p>原文 {{ inputCheck.originalChars.toLocaleString() }} 字符 · 清洗后 {{ inputCheck.cleanedText.length.toLocaleString() }} 字符 · {{ inputCheck.paragraphs }} 段</p>
+        <details open><summary>清洗后实际使用的正文</summary><pre>{{ inputCheck.cleanedText || '（没有剩余正文，本次未发送请求）' }}</pre></details>
+      </div>
       <template v-if="checkResult">
         <p>本次命中 {{ checkResult.activated.length }} 个条目</p>
         <ul v-if="checkResult.warnings.length" class="ip-error"><li v-for="warning in checkResult.warnings" :key="warning">{{ warning }}</li></ul>
@@ -413,6 +426,7 @@ async function inspect(send: boolean): Promise<void> {
 .ip-section li, .ip-section strong, .ip-section p, .ip-warning { overflow-wrap: anywhere; }
 .ip-error { color: var(--bbi-danger, #c64b54); }
 .ip-status { color: var(--bbi-accent, #2d9180); }
+.ip-input-check { display: grid; gap: 6px; padding: 10px 0; border-block: 1px solid var(--bbi-line); }
 .ip-muted { opacity: .72; font-size: 12px; }
 .ip-text { resize: vertical; min-height: 150px; }
 .ip-creative { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }

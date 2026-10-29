@@ -3,6 +3,7 @@ import { newImagePreset } from '@/presets/model';
 import { settings, newChannel } from '@/state/settings';
 import { cancelFloorTags, requestFloorTags } from './runner';
 import { mangaDefaults } from '@/manga/layouts';
+import { ApiError } from '@/api/client';
 
 const mock = vi.hoisted(() => ({
   context: null as any,
@@ -10,7 +11,9 @@ const mock = vi.hoisted(() => ({
   request: vi.fn(async (_channel: unknown, _messages: unknown, opts: any) => { opts.validate('{"images":[],"changes":[]}'); return ''; }),
   main: vi.fn(), write: vi.fn(),
 }));
-vi.mock('@/api/client', () => ({ requestCompletion: mock.request, requestViaMainApi: mock.main }));
+vi.mock('@/api/client', async importOriginal => ({
+  ...(await importOriginal<any>()), requestCompletion: mock.request, requestViaMainApi: mock.main,
+}));
 vi.mock('@/autoTag/prompt', () => ({
   autoTagProfile: (preset: any) => ({ naiCharPrompts: false, nl: false, lockedSize: null, layout: preset.mangaText === 'required' }),
   buildAutoTagMessages: mock.build,
@@ -44,6 +47,19 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('preset runner integration', () => {
+  it.each([400, 401, 402, 403, 404, 405, 413, 415, 422])('does not repeat an HTTP %i rejection', async status => {
+    settings.autoTag.retryCount = 5;
+    mock.request.mockRejectedValueOnce(new ApiError('Request rejected', status));
+    await requestFloorTags(0);
+    expect(mock.request).toHaveBeenCalledOnce();
+    expect(toastr.error).toHaveBeenCalledWith(expect.stringContaining('Request rejected'), expect.anything());
+  });
+  it('still retries a temporary HTTP failure within the configured budget', async () => {
+    settings.autoTag.retryCount = 1;
+    mock.request.mockRejectedValueOnce(new ApiError('Temporarily unavailable', 503));
+    await requestFloorTags(0);
+    expect(mock.request).toHaveBeenCalledTimes(2);
+  });
   it('accepts corrected lettering before writing a plan into the story', async () => {
     settings.imagePresets.presets[0].mangaText = 'required';
     settings.manga = { ...mangaDefaults(), enabled: true };

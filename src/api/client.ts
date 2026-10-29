@@ -52,6 +52,11 @@ export class ApiError extends Error {
   }
 }
 
+export function isPermanentApiError(error: unknown): boolean {
+  return error instanceof ApiError && error.status !== undefined &&
+    [400, 401, 402, 403, 404, 405, 413, 415, 422].includes(error.status);
+}
+
 function upstreamError(message: string, status?: number): ApiError {
   let hint = '';
   if (/PROXY_GENERATION_DISABLED/i.test(message) || (/AI Studio/i.test(message) && /build/i.test(message) && /Playground/i.test(message))) {
@@ -369,10 +374,21 @@ async function requestCompletionAtUrl(
 
       // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
       if (stream && !/\bjson\b/i.test(resp.headers.get('content-type') ?? '')) {
-        const streamed = await readSseContent(resp, { ...opts, onEvidence: text => { streamEvidence = text; }, onDelta: text => {
+        let lastProgressAt = 0, showedContent = false;
+        let latestProgress: { receivedChars: number; reasoningChars: number } | undefined;
+        const streamed = await readSseContent(resp, { ...opts, onProgress: progress => {
+          latestProgress = progress;
+          const firstContent = !showedContent && progress.receivedChars > 0;
+          if (!lastProgressAt || firstContent || Date.now() - lastProgressAt >= 200) {
+            lastProgressAt = Date.now();
+            showedContent ||= firstContent;
+            if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, { phase: 'streaming', ...progress }));
+          }
+        }, onEvidence: text => { streamEvidence = text; }, onDelta: text => {
           partialResponse = text;
           opts.onDelta?.(text);
         } });
+        if (historyId !== null && latestProgress) safeHistory(() => patchLlmResponse(historyId, latestProgress!));
         if (!streamed) throw new ApiError('副 API 返回空内容');
         // 流式无 usage:ST 构造上游请求体是字段白名单,不含 stream_options,
         // 没法让上游在末尾回 usage chunk。只能事后本地估算。
@@ -446,7 +462,10 @@ async function requestCompletionAtUrl(
  * 推理模型的思维链增量(delta.reasoning 等)单独缓冲:只有 content 全空时才回退用它,
  * 避免在 content 正常时把思维链混进正文。
  */
-export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 'imagePlanTool' | 'onDelta'> & { onEvidence?: (text: string) => void } = {}): Promise<string> {
+export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 'imagePlanTool' | 'onDelta'> & {
+  onEvidence?: (text: string) => void;
+  onProgress?: (progress: { receivedChars: number; reasoningChars: number }) => void;
+} = {}): Promise<string> {
   const reader = resp.body?.getReader();
   if (!reader) {
     // 无法流式读取(理论上不会):退回当作整体 JSON 处理
@@ -503,6 +522,9 @@ export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 
         calls.set(index, call);
       }
     }
+    const receivedChars = opts.imagePlanTool
+      ? [...calls.values()].reduce((sum, call) => sum + call.function.arguments.length, 0) : out.length;
+    if (receivedChars || reasoningOut.length) opts.onProgress?.({ receivedChars, reasoningChars: reasoningOut.length });
     opts.onDelta?.(opts.imagePlanTool ? [...calls.values()].map(c => c.function.arguments).join('\n') : out);
   };
   try {

@@ -9,6 +9,8 @@ import {
   failLlm,
   finishLlm,
   patchLlmTokens,
+  patchLlmResponse,
+  requestProgressLabel,
   records,
   resetHistory,
   roughTokens,
@@ -33,6 +35,24 @@ function llm(source = 'test'): number {
 
 beforeEach(() => {
   resetHistory();
+});
+
+describe('request progress', () => {
+  it('distinguishes headers, reasoning and actual plan content without calling counts tokens', () => {
+    const id = llm();
+    const record = records[0] as LlmRecord;
+    expect(requestProgressLabel(record)).toContain('等待接口响应');
+    patchLlmResponse(id, { phase: 'response', httpStatus: 200 });
+    expect(requestProgressLabel(record)).toBe('已收到响应头，等待有效内容');
+    patchLlmResponse(id, { phase: 'streaming', reasoningChars: 120, receivedChars: 0 });
+    expect(requestProgressLabel(record)).toBe('已接收思考 120 字符，等待配图内容');
+    patchLlmResponse(id, { receivedChars: 80 });
+    expect(requestProgressLabel(record)).toBe('已接收配图内容 80 字符 · 思考 120 字符');
+    patchLlmResponse(id, { phase: 'validation' });
+    expect(requestProgressLabel(record)).toContain('检查配图计划');
+    finishLlm(id, { response: '{}', promptTokens: null, completionTokens: null, tokensEstimated: false });
+    expect(requestProgressLabel(record)).toBe('响应处理完成');
+  });
 });
 
 describe('cache usage', () => {

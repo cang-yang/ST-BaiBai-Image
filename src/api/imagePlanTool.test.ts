@@ -55,9 +55,11 @@ describe('controlled tool output', () => {
       { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(25) } }] }, finish_reason: 'tool_calls' }] },
     ];
     const onDelta = vi.fn();
-    const response = await readSseContent(sse(chunks), { imagePlanTool: true, onDelta });
+    const onProgress = vi.fn();
+    const response = await readSseContent(sse(chunks), { imagePlanTool: true, onDelta, onProgress });
     expect(JSON.parse(response).images[0].tag).toBe('雨中的城市');
     expect(onDelta).toHaveBeenCalled();
+    expect(onProgress).toHaveBeenLastCalledWith({ receivedChars: args.length, reasoningChars: 0 });
   });
   it('never accepts truncated, missing or multiple tool calls', async () => {
     const event = { choices: [{ delta: { tool_calls: [{ index: 0, ...call }] } }] };

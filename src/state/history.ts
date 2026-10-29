@@ -55,7 +55,9 @@ export interface LlmRecord extends BaseRecord {
   stream: boolean;
   transport?: 'proxy' | 'direct' | 'main';
   endpoint?: string;
-  phase?: 'request' | 'response' | 'validation';
+  phase?: 'request' | 'response' | 'streaming' | 'validation';
+  receivedChars?: number;
+  reasoningChars?: number;
   httpStatus?: number | null;
   /** 完整提示词(已按 MAX_CONTENT 截断)。 */
   messages: ChatMsg[];
@@ -203,10 +205,22 @@ export interface LlmFinish {
 }
 
 /** Keep response evidence even when parsing or caller validation subsequently fails. */
-export function patchLlmResponse(id: number, info: Partial<LlmFinish> & Pick<Partial<LlmRecord>, 'phase' | 'httpStatus'>): void {
+export function patchLlmResponse(id: number, info: Partial<LlmFinish> & Pick<Partial<LlmRecord>, 'phase' | 'httpStatus' | 'receivedChars' | 'reasoningChars'>): void {
   const record = find(id);
   if (record?.kind !== 'llm') return;
   Object.assign(record, info, info.response === undefined ? {} : { response: truncate(info.response) });
+}
+
+export function requestProgressLabel(record: LlmRecord): string {
+  if (record.phase === 'validation') return record.status === 'ok' ? '响应处理完成' : '已收到内容，检查配图计划';
+  if (record.phase === 'streaming') {
+    const content = record.receivedChars ?? 0, reasoning = record.reasoningChars ?? 0;
+    return content > 0
+      ? `已接收配图内容 ${content.toLocaleString()} 字符${reasoning ? ` · 思考 ${reasoning.toLocaleString()} 字符` : ''}`
+      : `已接收思考 ${reasoning.toLocaleString()} 字符，等待配图内容`;
+  }
+  if (record.phase === 'response') return '已收到响应头，等待有效内容';
+  return '已发起请求，等待接口响应';
 }
 
 export function finishLlm(id: number, info: LlmFinish): void {

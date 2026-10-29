@@ -167,3 +167,15 @@ DSH 持久会话支持仅调整书写规范的预设；暂不能与启用的非�
 
 ID 由导入器重新生成。单文件不超过 2 MB、单份最多 2000 条目，预设库不超过 10 MB。
 导出不包含渠道、API 密钥或其他任务配置，但**你自己写进提示词或变量的私人文本会随预设导出**，分享前请检查。
+
+## 0.3.17: Input Inspection And Waiting Feedback
+
+Local preset checks display the actual cleaned target paragraphs, character
+counts and whether the selected preset is active. A fully removed story is
+blocked before testing the model. Local checking does not send a model request.
+
+During streaming requests, history distinguishes response headers, received
+reasoning, received plan content and plan validation. Counters are characters,
+not tokens. Explicit permanent HTTP rejections stop automatic retries; temporary
+failures retain the configured retry budget. None of these changes replaces
+image-quality verification.
