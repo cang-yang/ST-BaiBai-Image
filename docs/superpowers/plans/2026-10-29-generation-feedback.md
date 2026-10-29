@@ -56,4 +56,4 @@ Files: `src/pages/settings/ImagePresetSection.vue`,
 
 - [x] Run focused regressions, typecheck, build and diff checks.
 - [x] Inspect desktop/mobile and install the identical build locally.
-- [ ] Record limitations and commit/push the scoped version bump.
+- [x] Record limitations and commit/push the scoped version bump.
