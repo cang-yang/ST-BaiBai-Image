@@ -1,6 +1,7 @@
 import { getContext } from '@/st/context';
 import type { ApiChannel } from '@/state/settings';
 import { IMAGE_PLAN_TOOLS, IMAGE_PLAN_TOOL_CHOICE, imagePlanArguments } from './imagePlanTool';
+import { summarizeRequest } from './requestSummary';
 import {
   beginLlm,
   failLlm,
@@ -28,6 +29,8 @@ export interface ChatMsg {
   content: string;
   /** Local grouping only; never forwarded as an OpenAI message field. */
   purpose?: 'prefix' | 'spec' | 'contract' | 'check';
+  /** Local provenance label, stripped by wireMessages. */
+  source?: string;
 }
 
 export interface DshSessionRequest {
@@ -46,15 +49,20 @@ export function wireMessages(messages: ChatMsg[]): ChatMsg[] {
 }
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(message: string, readonly status?: number, readonly code?: 'content_filter' | 'incomplete_output' | 'reasoning_only') {
     super(message);
     this.name = 'ApiError';
   }
 }
 
 export function isPermanentApiError(error: unknown): boolean {
-  return error instanceof ApiError && error.status !== undefined &&
-    [400, 401, 402, 403, 404, 405, 413, 415, 422].includes(error.status);
+  return error instanceof ApiError && (error.code === 'content_filter' || (error.status !== undefined &&
+    [400, 401, 402, 403, 404, 405, 413, 415, 422].includes(error.status)));
+}
+
+function checkFinishReason(reason: unknown): void {
+  if (reason === 'content_filter') throw new ApiError('上游返回内容过滤 (content_filter)，未交付可用的配图结果。已停止自动重试，请检查请求内容和服务商说明。', undefined, 'content_filter');
+  if (reason === 'length') throw new ApiError('副 API 输出未完成 (length)：达到上游输出上限，不能使用截断的配图结果。', undefined, 'incomplete_output');
 }
 
 function upstreamError(message: string, status?: number): ApiError {
@@ -350,6 +358,7 @@ async function requestCompletionAtUrl(
       messages,
       transport: opts.direct ? 'direct' : 'proxy',
       endpoint: diagnosticEndpoint(reverseProxy),
+      request: summarizeRequest(body),
     }),
   );
 
@@ -376,19 +385,25 @@ async function requestCompletionAtUrl(
       if (stream && !/\bjson\b/i.test(resp.headers.get('content-type') ?? '')) {
         let lastProgressAt = 0, showedContent = false;
         let latestProgress: { receivedChars: number; reasoningChars: number } | undefined;
-        const streamed = await readSseContent(resp, { ...opts, onProgress: progress => {
-          latestProgress = progress;
-          const firstContent = !showedContent && progress.receivedChars > 0;
-          if (!lastProgressAt || firstContent || Date.now() - lastProgressAt >= 200) {
-            lastProgressAt = Date.now();
-            showedContent ||= firstContent;
-            if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, { phase: 'streaming', ...progress }));
-          }
-        }, onEvidence: text => { streamEvidence = text; }, onDelta: text => {
-          partialResponse = text;
-          opts.onDelta?.(text);
-        } });
-        if (historyId !== null && latestProgress) safeHistory(() => patchLlmResponse(historyId, latestProgress!));
+        let streamed: string;
+        try {
+          streamed = await readSseContent(resp, { ...opts, onProgress: progress => {
+            latestProgress = progress;
+            const firstContent = !showedContent && progress.receivedChars > 0;
+            if (!lastProgressAt || firstContent || Date.now() - lastProgressAt >= 200) {
+              lastProgressAt = Date.now();
+              showedContent ||= firstContent;
+              if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, { phase: 'streaming', ...progress }));
+            }
+          }, onFinishReason: finishReason => {
+            if (historyId !== null) safeHistory(() => patchLlmResponse(historyId, { finishReason }));
+          }, onEvidence: text => { streamEvidence = text; }, onDelta: text => {
+            partialResponse = text;
+            opts.onDelta?.(text);
+          } });
+        } finally {
+          if (historyId !== null && latestProgress) safeHistory(() => patchLlmResponse(historyId, latestProgress!));
+        }
         if (!streamed) throw new ApiError('副 API 返回空内容');
         // 流式无 usage:ST 构造上游请求体是字段白名单,不含 stream_options,
         // 没法让上游在末尾回 usage chunk。只能事后本地估算。
@@ -408,6 +423,7 @@ async function requestCompletionAtUrl(
         promptTokens: readUsage(data).prompt,
         completionTokens: readUsage(data).completion,
         cacheReadTokens: readUsage(data).cached,
+        finishReason: typeof data?.choices?.[0]?.finish_reason === 'string' ? data.choices[0].finish_reason : undefined,
       }));
       if (data?.error) {
         throw upstreamError(data.error.message || '副 API 返回错误');
@@ -459,12 +475,12 @@ async function requestCompletionAtUrl(
 /**
  * 读取 SSE 流(text/event-stream),拼接 delta.content。
  * ST 的 generate 端点在 stream=true 时透传上游 SSE:每行 `data: {json}`,以 `data: [DONE]` 结束。
- * 推理模型的思维链增量(delta.reasoning 等)单独缓冲:只有 content 全空时才回退用它,
- * 避免在 content 正常时把思维链混进正文。
+ * 推理增量单独统计，不当作最终配图结果；结束原因由上游提供，不能用 HTTP 200 代替。
  */
 export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 'imagePlanTool' | 'onDelta'> & {
   onEvidence?: (text: string) => void;
   onProgress?: (progress: { receivedChars: number; reasoningChars: number }) => void;
+  onFinishReason?: (reason: string) => void;
 } = {}): Promise<string> {
   const reader = resp.body?.getReader();
   if (!reader) {
@@ -505,7 +521,7 @@ export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 
     }
     if (json?.error) throw upstreamError(json.error.message || '副 API 返回错误');
     const choice = json?.choices?.[0];
-    if (['length', 'content_filter'].includes(choice?.finish_reason)) throw new ApiError(`副 API 输出未完成 (${choice.finish_reason})`);
+    if (typeof choice?.finish_reason === 'string') opts.onFinishReason?.(choice.finish_reason);
     if (choice?.finish_reason) terminated = true;
     const src = choice?.delta ?? choice?.message;
     const piece = textOf(src?.content) || textOf(choice?.text);
@@ -526,6 +542,7 @@ export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 
       ? [...calls.values()].reduce((sum, call) => sum + call.function.arguments.length, 0) : out.length;
     if (receivedChars || reasoningOut.length) opts.onProgress?.({ receivedChars, reasoningChars: reasoningOut.length });
     opts.onDelta?.(opts.imagePlanTool ? [...calls.values()].map(c => c.function.arguments).join('\n') : out);
+    checkFinishReason(choice?.finish_reason);
   };
   try {
     for (; ;) {
@@ -550,7 +567,8 @@ export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 
       return imagePlanArguments([...calls.values()]);
     }
     if (calls.size) throw new ApiError('收到工具调用，请在配图预设中选择工具输出');
-    return out.trim() || reasoningOut.trim();
+    if (!out.trim() && reasoningOut.trim()) throw new ApiError('副 API 仅返回思考内容，没有交付最终配图结果。请在请求历史查看结束原因及原始响应。', undefined, 'reasoning_only');
+    return out.trim();
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
@@ -559,10 +577,12 @@ export async function readSseContent(resp: Response, opts: Pick<RequestOptions, 
 
 export function extractCompletion(data: any, imagePlanTool = false): string {
   const choice = data?.choices?.[0];
-  if (['length', 'content_filter'].includes(choice?.finish_reason)) throw new ApiError(`副 API 输出未完成 (${choice.finish_reason})`);
+  checkFinishReason(choice?.finish_reason);
   if (imagePlanTool) return imagePlanArguments(choice?.message?.tool_calls);
   if (choice?.message?.tool_calls?.length) throw new ApiError('收到工具调用，请在配图预设中选择工具输出');
-  return extractContent(data);
+  const content = textOf(choice?.message?.content) || textOf(choice?.text) || textOf(data?.content);
+  if (!content.trim() && extractContent(data)) throw new ApiError('副 API 仅返回思考内容，没有交付最终配图结果。', undefined, 'reasoning_only');
+  return content.trim();
 }
 
 /** 把可能是 string / content-parts 数组 / 其他类型的值转成文本;非字符串成分一律丢弃。 */

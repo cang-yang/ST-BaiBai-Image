@@ -130,6 +130,8 @@ DSH 持久会话支持仅调整书写规范的预设；暂不能与启用的非�
 4. 智绘姬请求类型档案：只提取 `image_gen.context_profile` 指向的正文配图条目。
 5. 智绘姬上下文预设名称映射，例如 `{ "预设名": { "entries": [...] } }`。
 
+包含自定义 `tools` / `functions` 或指定工具调用协议的完整 API 请求不是消息预设。导入器会拒绝这种文件，不会静默丢弃工具后假装兼容。仅转换条目不代表复现原插件的请求包装、输出提取和执行环境。
+
 智绘姬转换保留条目顺序、名称、启用状态、消息角色、主/附加关键词。提供部分常用中文变量别名。
 **不保证原文件开箱即用**：原来的 XML 输出、挂载正则、`display_stream`、`【ToolCall引导】`、专属服装库和角色占位符调用并非柏宝绘协议。
 工具引导块或未提供变量会明确阻止请求；需要在编辑器修改或停用对应条目。旧 XML 指令应删除，最终始终遵守柏宝绘的 JSON 契约。没有复制外部项目的脚本执行、越权宏或其他任务引擎。
@@ -179,3 +181,11 @@ reasoning, received plan content and plan validation. Counters are characters,
 not tokens. Explicit permanent HTTP rejections stop automatic retries; temporary
 failures retain the configured retry budget. None of these changes replaces
 image-quality verification.
+
+## 0.3.20: Request Evidence And Compatibility Boundaries
+
+请求历史与本地预览显示每段消息的来源：预设条目、书写规范、插件提交协议、检查指导、角色资料或世界书。来源只在本地展示，发送时仍只有标准 role/content。历史按发送前实际字符数计数，不再把截断留存内容的估算当成整段长度。
+
+每次独立副 API 请求还保留一份白名单参数摘要：提交方式、工具名、输出上限、温度、流式与思考强度。不记录 API 密钥、请求头或工具说明；酒馆转发时摘要描述插件交给酒馆的请求，不保证第三方脚本或上游没有再次改写。跟随主 API 的宿主黑盒路径不推测参数。
+
+HTTP 200 只表示收到接口响应。上游 `content_filter` 单独报告并停止一般自动重试；`length` 报告输出截断；仅有原生 reasoning 而没有最终正文时明确报告“仅返回思考”，不把推理草稿当作成功配图计划。流式失败、超时或取消时也刷新已收到的最后进度，避免仍显示过时计数。

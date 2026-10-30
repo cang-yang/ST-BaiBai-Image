@@ -1,6 +1,7 @@
 import { reactive } from 'vue';
 
 import type { ChatMsg } from '@/api/client';
+import type { RequestSummary } from '@/api/requestSummary';
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { Orientation } from '@/backends/size';
 
@@ -59,6 +60,9 @@ export interface LlmRecord extends BaseRecord {
   receivedChars?: number;
   reasoningChars?: number;
   httpStatus?: number | null;
+  finishReason?: string;
+  request?: RequestSummary;
+  messageLengths?: number[];
   /** 完整提示词(已按 MAX_CONTENT 截断)。 */
   messages: ChatMsg[];
   /** 返回正文(已截断)。 */
@@ -141,7 +145,8 @@ export function roughTokens(text: string): number {
 
 function truncateMessages(messages: ChatMsg[]): ChatMsg[] {
   if (!Array.isArray(messages)) return [];
-  return messages.map(m => ({ role: m.role, content: truncate(m.content) }));
+  return messages.map(m => ({ role: m.role, content: truncate(m.content),
+    ...(m.purpose ? { purpose: m.purpose } : {}), ...(m.source ? { source: m.source.slice(0, 160) } : {}) }));
 }
 
 /** 压入一条并维持封顶。新记录进头部,超出时从尾部(最旧)丢弃。 */
@@ -166,6 +171,7 @@ export interface LlmBegin {
   messages: ChatMsg[];
   transport?: LlmRecord['transport'];
   endpoint?: string;
+  request?: RequestSummary;
 }
 
 /** 登记一次副 API 请求,返回 id 供后续 finish/fail。 */
@@ -187,6 +193,8 @@ export function beginLlm(info: LlmBegin): number {
     phase: 'request',
     httpStatus: null,
     messages: truncateMessages(info.messages),
+    messageLengths: info.messages.map(m => m.content.length),
+    request: info.request ? { ...info.request, toolNames: [...info.request.toolNames] } : undefined,
     response: '',
     promptTokens: null,
     completionTokens: null,
@@ -205,13 +213,15 @@ export interface LlmFinish {
 }
 
 /** Keep response evidence even when parsing or caller validation subsequently fails. */
-export function patchLlmResponse(id: number, info: Partial<LlmFinish> & Pick<Partial<LlmRecord>, 'phase' | 'httpStatus' | 'receivedChars' | 'reasoningChars'>): void {
+export function patchLlmResponse(id: number, info: Partial<LlmFinish> & Pick<Partial<LlmRecord>, 'phase' | 'httpStatus' | 'receivedChars' | 'reasoningChars' | 'finishReason'>): void {
   const record = find(id);
   if (record?.kind !== 'llm') return;
   Object.assign(record, info, info.response === undefined ? {} : { response: truncate(info.response) });
 }
 
 export function requestProgressLabel(record: LlmRecord): string {
+  if (record.status === 'error' && record.finishReason === 'content_filter') return '上游内容过滤，未交付可用结果';
+  if (record.status !== 'running' && record.phase === 'streaming' && !record.receivedChars) return `请求已结束 · 思考 ${(record.reasoningChars ?? 0).toLocaleString()} 字符 · 无配图内容`;
   if (record.phase === 'validation') return record.status === 'ok' ? '响应处理完成' : '已收到内容，检查配图计划';
   if (record.phase === 'streaming') {
     const content = record.receivedChars ?? 0, reasoning = record.reasoningChars ?? 0;

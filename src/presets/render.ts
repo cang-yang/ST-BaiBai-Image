@@ -56,7 +56,7 @@ export function renderPreset(
       },
     );
     if (content.includes('【ToolCall引导】')) warnings.add('条目包含旧 ToolCall 引导，请移除该块；工具输出由“输出方式”统一控制');
-    if (content.trim()) messages.push({ role: entry.role, content });
+    if (content.trim()) messages.push({ role: entry.role, content, source: `预设条目 · ${entry.name}` });
   }
   return { messages, activated, warnings: [...warnings] };
 }

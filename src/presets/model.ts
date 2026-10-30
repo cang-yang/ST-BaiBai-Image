@@ -203,6 +203,11 @@ export function importPresets(json: string, filename = '导入预设'): ImagePro
   }
   const messages = Array.isArray(raw) ? raw : record(raw) ? raw.messages : null;
   if (Array.isArray(messages)) {
+    if (record(raw) && ((Array.isArray(raw.tools) && raw.tools.length) ||
+      (Array.isArray(raw.functions) && raw.functions.length) || record(raw.tool_choice) || record(raw.function_call) ||
+      raw.tool_choice === 'required' || raw.function_call === 'required')) {
+      throw new Error('这是完整 API 请求，其中包含工具协议，不能当作提示词预设等价导入。请导出正文配图预设；插件的提交方式由预设中的普通 JSON / 工具输出选项决定。');
+    }
     return [readPreset({ name: filename.replace(/\.json$/i, ''), entries: messages }, true)];
   }
   if (record(raw)) {

@@ -147,7 +147,7 @@ describe('private native world info scanner', () => {
     const messages = injectImageWorldbooks([prefix, { role: 'user', content: 'story' }], result, 1);
     expect(messages[0]).toEqual(prefix);
     expect(messages[1].content).toBe('early OUTLET\nlate');
-    expect(messages.at(-1)).toEqual({ role: 'user', content: 'DEPTH0' });
+    expect(messages.at(-1)).toEqual({ role: 'user', content: 'DEPTH0', source: '生图世界书' });
     expect(messages.slice(1).every(m => !m.purpose)).toBe(true);
     expect(injectImageWorldbooks([prefix], emptyScan(), 1)).toEqual([prefix]);
   });
@@ -157,7 +157,7 @@ describe('private native world info scanner', () => {
     const result = await scanImageWorldbooks(input);
     expect(result.WIDepthEntries).toEqual([{ depth: 0, role: 0, entries: ['DEFAULT_ROLE_REFERENCE'] }]);
     expect(injectImageWorldbooks([{ role: 'user', content: 'story' }], result, 0).at(-1)).toEqual({
-      role: 'system', content: 'DEFAULT_ROLE_REFERENCE',
+      role: 'system', content: 'DEFAULT_ROLE_REFERENCE', source: '生图世界书',
     });
   });
   it('scans repaired native imports and injects their references into the tag request', async () => {

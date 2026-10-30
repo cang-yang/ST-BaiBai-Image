@@ -392,7 +392,7 @@ async function inspect(send: boolean): Promise<void> {
         <p>本次命中 {{ checkResult.activated.length }} 个条目</p>
         <ul v-if="checkResult.warnings.length" class="ip-error"><li v-for="warning in checkResult.warnings" :key="warning">{{ warning }}</li></ul>
       </template>
-      <details v-if="preview.length"><summary>查看实际请求消息 · {{ preview.length }} 条</summary><div v-for="(message, index) in preview" :key="index"><strong>{{ index + 1 }} · {{ previewPurpose(message.purpose) }} · {{ message.role }}</strong><pre>{{ message.content }}</pre></div></details>
+      <details v-if="preview.length"><summary>查看实际请求消息 · {{ preview.length }} 条</summary><div v-for="(message, index) in preview" :key="index"><strong>{{ index + 1 }} · {{ message.source || previewPurpose(message.purpose) }} · {{ message.role }}</strong><pre>{{ message.content }}</pre></div></details>
       <details v-if="result" open><summary>{{ busy ? '正在接收' : '返回结果' }}</summary><pre>{{ result }}</pre></details>
     </details>
     <ConfirmDialog :open="!!removeTarget" title="删除配图预设" confirm-text="删除" tone="danger" confirm-icon="trash" @confirm="remove" @cancel="removeTarget = undefined">删除「{{ removeTarget?.name }}」？正在使用时将切回内置默认。</ConfirmDialog>

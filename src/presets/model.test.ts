@@ -36,6 +36,15 @@ describe('native image presets', () => {
       expect(preset.entries.map(e => e.role)).toEqual(['system', 'user']);
     }
   });
+  it('does not silently discard an API request tool protocol while importing its messages', () => {
+    for (const extra of [
+      { tools: [{ type: 'function', function: { name: 'custom_output', parameters: { type: 'object' } } }] },
+      { functions: [{ name: 'custom_output' }] },
+      { tool_choice: { type: 'function', function: { name: 'custom_output' } } },
+      { function_call: { name: 'custom_output' } },
+    ]) expect(() => importPresets(JSON.stringify({ messages: [{ role: 'user', content: 'story' }], ...extra })))
+      .toThrow(/完整 API 请求.*工具/);
+  });
   it('extracts only image_gen from a legacy request profile', () => {
     const entry = { name: 'reference', content: 'scene', role: 'user', enabled: true, triggerMode: 'trigger', triggerWords: 'rain', andTriggerWords: 'street' };
     const [preset] = importPresets(JSON.stringify({
@@ -148,6 +157,14 @@ describe('native image presets', () => {
 });
 
 describe('preset rendering', () => {
+  it('labels each rendered entry without forwarding local provenance to the API', async () => {
+    const { wireMessages } = await import('@/api/client');
+    const preset = newImagePreset();
+    preset.entries = [{ ...newPromptEntry(), name: 'Task reference', content: 'reference' }];
+    const result = renderPreset(preset, {}, '');
+    expect(result.messages[0].source).toBe('预设条目 · Task reference');
+    expect(wireMessages(result.messages)).toEqual([{ role: preset.entries[0].role, content: 'reference' }]);
+  });
   it('expands built-ins and sequential local variables without executing host macros or recursively expanding data', () => {
     const preset = newImagePreset();
     preset.variables.style = 'ink';

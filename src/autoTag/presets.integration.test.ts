@@ -67,6 +67,13 @@ describe('preset runner integration', () => {
     await requestFloorTags(0);
     expect(mock.request).toHaveBeenCalledTimes(2);
   });
+  it('does not repeat a content-filter termination even after HTTP 200', async () => {
+    settings.autoTag.retryCount = 5;
+    mock.request.mockRejectedValueOnce(new ApiError('Filtered upstream', undefined, 'content_filter'));
+    await requestFloorTags(0);
+    expect(mock.request).toHaveBeenCalledOnce();
+    expect(mock.write).not.toHaveBeenCalled();
+  });
   it('accepts corrected lettering before writing a plan into the story', async () => {
     settings.imagePresets.presets[0].mangaText = 'required';
     settings.manga = { ...mangaDefaults(), enabled: true };

@@ -235,7 +235,7 @@ describe('readSseContent:流式', () => {
     await expect(readSseContent(sseResponse(sse))).resolves.toBe('Hello');
   });
 
-  it('content 全空时回退拼接 reasoning 增量', async () => {
+  it('content 全空时不把 reasoning 增量冒充最终答案', async () => {
     const sse = [
       'data: {"choices":[{"delta":{"reasoning":"思考"}}]}',
       'data: {"choices":[{"delta":{"reasoning_content":"…{\\"images\\":[]}"}}]}',
@@ -243,7 +243,7 @@ describe('readSseContent:流式', () => {
       'data: [DONE]',
       '',
     ].join('\n');
-    await expect(readSseContent(sseResponse(sse))).resolves.toContain('"images"');
+    await expect(readSseContent(sseResponse(sse))).rejects.toThrow(/仅返回思考/);
   });
 
   it('content 出现后忽略 reasoning,不拼接', async () => {

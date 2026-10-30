@@ -38,6 +38,13 @@ beforeEach(() => {
 });
 
 describe('request progress', () => {
+  it('retains local source labels and original lengths without sending them to the API', () => {
+    beginLlm({ source: 'test', channelName: 'test', model: 'test', stream: false,
+      messages: [{ role: 'system', content: 'x'.repeat(MAX_CONTENT + 1), purpose: 'spec', source: '书写规范' }] });
+    const record = records[0] as LlmRecord;
+    expect(record.messages[0]).toMatchObject({ purpose: 'spec', source: '书写规范' });
+    expect(record.messageLengths).toEqual([MAX_CONTENT + 1]);
+  });
   it('distinguishes headers, reasoning and actual plan content without calling counts tokens', () => {
     const id = llm();
     const record = records[0] as LlmRecord;

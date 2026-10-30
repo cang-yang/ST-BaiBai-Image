@@ -144,7 +144,7 @@ export async function scanImageWorldbooks(input: ScanInput): Promise<WorldbookSc
 /** Local equivalents of ST anchors; only the independent tag request is changed. */
 export function injectImageWorldbooks(messages: ChatMsg[], result: WorldbookScanResult, characterIndex: number): ChatMsg[] {
   const out = messages.map(m => ({ ...m }));
-  const system = (content: string): ChatMsg => ({ role: 'system', content });
+  const system = (content: string): ChatMsg => ({ role: 'system', content, source: '生图世界书' });
   const before = [result.worldInfoBefore, ...result.EMEntries.filter(e => e.position === 0).map(e => e.content)].filter(Boolean);
   const after = [result.worldInfoAfter, ...result.EMEntries.filter(e => e.position === 1).map(e => e.content)].filter(Boolean);
   out.splice(characterIndex, 0, ...before.map(system));
@@ -154,7 +154,7 @@ export function injectImageWorldbooks(messages: ChatMsg[], result: WorldbookScan
   const length = out.length;
   const depthInsertions = result.WIDepthEntries.map(group => ({
     index: Math.max(characterIndex, length - (group.depth ?? 4)),
-    message: { role: (['system', 'user', 'assistant'] as const)[group.role ?? 0] ?? 'system', content: group.entries.join('\n') },
+    message: { role: (['system', 'user', 'assistant'] as const)[group.role ?? 0] ?? 'system', content: group.entries.join('\n'), source: '生图世界书' },
   }));
   for (const item of depthInsertions.sort((a, b) => b.index - a.index)) out.splice(item.index, 0, item.message);
   for (const message of out) {

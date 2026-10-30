@@ -394,9 +394,9 @@ ${characterRule}
   const messages: ChatMsg[] = [];
   // 破限词与柏宝书同口径:留空回落内置默认(同款文本),永远置顶第一条 system。
   const jailbreak = ownedRules ? ownedRules.jailbreak : (options.prompts?.jailbreak ?? '').trim() || DEFAULT_JAILBREAK_PROMPT;
-  if (jailbreak) messages.push({ role: 'system', content: jailbreak, purpose: 'prefix' });
+  if (jailbreak) messages.push({ role: 'system', content: jailbreak, purpose: 'prefix', source: '通用前置规则' });
   // 后端书写规范(ComfyUI/NAI)压在固定协议之前;无适用规范时不占消息位。
-  if (spec) messages.push({ role: 'system', content: spec, purpose: 'spec' });
+  if (spec) messages.push({ role: 'system', content: spec, purpose: 'spec', source: '书写规范与版式' });
   const contract = layoutOn ? fixedContract
     .replaceAll('单一瞬间', '短事件漫画页（每格一个瞬间）')
     .replace('不要返回同一事件的相邻动作或换镜头版本。', '不同页不重复同一事件；同页各格允许按原文推进动作、切换镜头或呈现反应。')
@@ -424,7 +424,7 @@ ${characterRule}
   const letteringContract = layoutOn && preset?.mangaText === 'required' ? `\n\n${MANGA_TEXT_REQUIREMENT}` : '';
   const compositionContract = layoutOn && preset?.mangaComposition === 'expressive'
     ? `\n\n${buildCompositionBrief(settings.manga, profile.lockedSize, recentMangaLayouts(context.chat, targetFloor))}` : '';
-  messages.push({ role: 'system', content: contract + letteringContract + compositionContract, purpose: 'contract' });
+  messages.push({ role: 'system', content: contract + letteringContract + compositionContract, purpose: 'contract', source: '插件提交协议' });
   // 检查内容不决定提交方式；两种模式都在末尾重申本次协议。
   const mangaThinking =
     layoutOn && settings.manga.enabled && settings.manga.thinking.trim() ? expandNlSections(settings.manga.thinking, nlOn) : '';
@@ -435,16 +435,16 @@ ${characterRule}
       ? '内部核对事实与状态、人物归属、镜头与接触、光影与细节、文字与读序、JSON与坐标。tag 为完整 Layout JSON 字符串，nl 留空，不输出检查摘要、逐格推理或提示词草稿。'
       : backendThinkingPrompt(options, nlOn, naiCharPromptsOn));
   if (thinking) messages.push({
-    role: 'system', purpose: 'check',
+    role: 'system', purpose: 'check', source: '检查指导',
     content: `${thinking}\n\n${submissionContract}`,
   });
   const characterIndex = messages.length;
-  if (charCard) messages.push({ role: 'system', content: buildCharCardSystem(charCard) });
-  if (persona) messages.push({ role: 'system', content: buildPersonaSystem(persona) });
-  if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo) });
+  if (charCard) messages.push({ role: 'system', content: buildCharCardSystem(charCard), source: '角色卡资料' });
+  if (persona) messages.push({ role: 'system', content: buildPersonaSystem(persona), source: '用户人设' });
+  if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo), source: '全局世界书' });
   const libraryBlock = library?.trim() || `【角色固定外貌库】[system-maintained; currently empty]\n（当前为空，没有任何角色已建档。世界书、角色卡、柏宝书和正文只提供建档依据；未列在本区块中的正式角色必须通过 field:"new" 建档。）`;
   const taskBlock = taskNote?.trim() ? `${taskNote.trim()}\n\n` : '';
   const userContent = `${memoryText}\n\n${libraryBlock}\n\n${taskBlock}${previous ? `${previous}\n\n` : ''}--- 目标正文｜${roleLabel(context, targetFloor)} ---\n${preparedTarget.promptText}`;
-  messages.push({ role: 'user', content: userContent });
+  messages.push({ role: 'user', content: userContent, source: '正文、历史与角色资料' });
   return injectImageWorldbooks(messages, imageWorldbooks, characterIndex);
 }

@@ -33,6 +33,7 @@ interface Segment {
   /** 行首标签:system / user / assistant / 返回 / 正向提示词 … */
   label: string;
   text: string;
+  characters?: number;
 }
 
 const filter = ref<Filter>('all');
@@ -108,13 +109,17 @@ function cacheLabel(record: LlmRecord, compact = false): string {
 function requestFacts(record: LlmRecord): string[] {
   const transport = record.transport === 'direct' ? '浏览器直连' : record.transport === 'proxy' ? '酒馆转发' : record.transport === 'main' ? '跟随主 API' : '';
   const phase = requestProgressLabel(record);
-  return [transport, record.endpoint ?? '', record.httpStatus ? `HTTP ${record.httpStatus}` : '', phase].filter(Boolean);
+  return [transport, record.endpoint ?? '', record.httpStatus ? `HTTP ${record.httpStatus}` : '',
+    record.request ? record.request.output === 'tool' ? '工具输出' : '普通输出' : '',
+    record.finishReason ? `结束原因 ${record.finishReason}` : '', phase].filter(Boolean);
 }
 
 /** 把一条记录摊成「按顺序的若干段」——展开区就是照这个顺序渲染的。 */
 function segments(record: HistoryRecord): Segment[] {
   if (record.kind === 'llm') {
-    const out: Segment[] = record.messages.map(m => ({ label: m.role, text: m.content }));
+    const out: Segment[] = record.messages.map((m, index) => ({ label: m.source ? `${m.source} · ${m.role}` : m.role,
+      text: m.content, characters: record.messageLengths?.[index] }));
+    if (record.request) out.unshift({ label: '请求参数', text: JSON.stringify(record.request, null, 2) });
     if (record.response) out.push({ label: '返回', text: record.response });
     return out;
   }
@@ -266,8 +271,8 @@ function copyAll(record: HistoryRecord): void {
               <span class="bbi-prompt-preview">{{ inline(seg.text) }}</span>
               <span
                 class="bbi-prompt-len"
-                title="本段 token 粗估（本地按字符估算，仅供段间比较，与标题行的真实用量口径不同）"
-              >≈{{ roughTokens(seg.text).toLocaleString() }}</span>
+                :title="seg.characters === undefined ? '本地 token 粗估，仅供参考' : '发送前的实际字符数，未受历史留存截断影响'"
+              >{{ seg.characters === undefined ? `≈${roughTokens(seg.text).toLocaleString()}` : `${seg.characters.toLocaleString()} 字符` }}</span>
               <Icon name="eye" class="bbi-prompt-edit" />
             </button>
           </li>
@@ -448,9 +453,10 @@ function copyAll(record: HistoryRecord): void {
 }
 .bbi-prompt-open {
   width: 100%;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content 16px;
   align-items: center;
-  gap: 12px;
+  gap: 4px 12px;
   padding: 10px 14px;
   border: 1px solid var(--bbi-line);
   border-radius: var(--bbi-radius);
@@ -467,25 +473,21 @@ function copyAll(record: HistoryRecord): void {
   border-color: var(--bbi-accent);
   background: var(--bbi-surface);
 }
-/* 角色标签 = 这段提示词的身份,与设置页 .bbi-prompt-name 同口径:走 --bbi-ink。
-   定宽让各行预览的左边缘对齐成一条线。
-   【宽度按最长标签定】ASSISTANT 是 9 个大写等宽字符 + letter-spacing,原来拍脑袋
-   给的 72px 装不下,被省略成「ASSISTAN…」。用 ch 单位跟着字号走,换字号不会再截断。
-   【勿改成 --bbi-accent】它在粉彩主题下是 #ffafcc(浅粉,本就是给背景用的,
-   配套 --bbi-accent-ink 白字),当文字色压在浅色面上几乎看不见。 */
 .bbi-prompt-role {
-  flex: 0 0 auto;
-  width: 10.5ch;
-  font-family: var(--bbi-font-mono);
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--bbi-font-sans);
   font-size: 12px;
   font-weight: 600;
   color: var(--bbi-ink);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
+  letter-spacing: 0;
+  line-height: 1.4;
 }
 .bbi-prompt-preview {
-  flex: 1 1 auto;
+  grid-column: 1;
+  grid-row: 2;
   min-width: 0;
   font-family: var(--bbi-font-mono);
   font-size: 12px;
@@ -494,13 +496,9 @@ function copyAll(record: HistoryRecord): void {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* token 粗估:一眼看出哪段最占篇幅,是这个列表最该被读到的值。
-   定宽 + 右对齐 + tabular-nums:各行个位对齐成一列,不同位数(≈400 / ≈3,700)
-   才能直接比长短;不定宽的话数字随预览宽度浮动,比大小就得逐个读。
-   宽度含 ≈ 前缀 + 5 位数(万级),用 ch 跟着字号走。 */
 .bbi-prompt-len {
-  flex: 0 0 auto;
-  width: 7ch;
+  grid-column: 2;
+  grid-row: 1 / 3;
   text-align: right;
   font-family: var(--bbi-font-mono);
   font-size: 11px;
@@ -509,7 +507,8 @@ function copyAll(record: HistoryRecord): void {
   white-space: nowrap;
 }
 .bbi-prompt-edit {
-  flex: 0 0 auto;
+  grid-column: 3;
+  grid-row: 1 / 3;
   font-size: 16px;
   color: var(--bbi-ink-muted);
 }
