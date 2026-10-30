@@ -199,6 +199,17 @@ describe('ST JSON round trip', () => {
 });
 
 describe('tag-only integration', () => {
+  it('keeps depth anchors before closing entries and expands their outlets without mutation', () => {
+    const result = emptyScan();
+    result.WIDepthEntries = [{ depth: 0, role: 0, entries: ['DEPTH_ZERO'] }];
+    result.outletEntries = { closing: ['OUTLET_VALUE'] };
+    const messages = [{ role: 'user' as const, content: 'STORY' }];
+    const tail = [{ role: 'user' as const, content: 'CHECK {{outlet::closing}}' }];
+    const injected = injectImageWorldbooks(messages, result, 0, tail);
+    expect(injected.map(m => m.content)).toEqual(['STORY', 'DEPTH_ZERO', 'CHECK OUTLET_VALUE']);
+    expect(tail[0].content).toBe('CHECK {{outlet::closing}}');
+    expect(messages).toHaveLength(1);
+  });
   it('injects a private book into dynamic tag messages, not host global books or fixed rules', async () => {
     const previous = settings.imageWorldbooks;
     const input = setup([{ constant: true, content: 'PRIVATE_IMAGE_REFERENCE', position: 4, depth: 999 }]);

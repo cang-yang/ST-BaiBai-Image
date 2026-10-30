@@ -13,7 +13,7 @@ import {
 } from '@/state/settings';
 import type { STContext } from '@/st/context';
 import { applyMangaFrames, mangaDefaults } from '@/manga/layouts';
-import { newImagePreset } from '@/presets/model';
+import { newImagePreset, newPromptEntry } from '@/presets/model';
 import { builtinImagePreset } from '@/presets/catalog';
 
 /**
@@ -63,6 +63,64 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
+  it.each(['text', 'tool'] as const)('places final preset instructions after materials and keeps the %s protocol last', async output => {
+    const preset = newImagePreset();
+    preset.output = output;
+    preset.entries = [
+      { ...newPromptEntry(), content: 'BEFORE_DATA' },
+      { ...newPromptEntry(), placement: 'after_data', content: 'AFTER_DATA_CHECK', role: 'assistant' },
+    ];
+    const options: AutoTagSettings = { enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 0, autoGenerate: false, prompts: prompts() };
+    const messages = await buildAutoTagMessages(context(), 1, options, null, undefined, 'LIBRARY_UNIQUE', 'TASK_UNIQUE', autoTagProfile(preset), preset);
+    const all = messages.map(m => m.content).join('\n');
+    expect(all.indexOf('AFTER_DATA_CHECK')).toBeGreaterThan(all.indexOf('目标第一行'));
+    expect(messages.at(-1)!.role).toBe('user');
+    expect(messages.at(-1)!.content).toContain(output === 'tool' ? '只通过 submit_image_plan' : '当前输出方式：普通输出');
+  });
+  it('does not append materials a second time when the preset places them itself', async () => {
+    const preset = newImagePreset();
+    preset.entries = [{ ...newPromptEntry(), content: 'BODY:\n{{正文}}\nLIB:\n{{library}}\nTASK:\n{{task}}' }];
+    const options: AutoTagSettings = { enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 0, autoGenerate: false, prompts: prompts() };
+    const ctx = context();
+    ctx.chat[0].is_user = false;
+    const messages = await buildAutoTagMessages(ctx, 1, options, null, undefined, 'LIBRARY_UNIQUE', 'TASK_UNIQUE', autoTagProfile(preset), preset);
+    const all = messages.map(m => m.content).join('\n');
+    for (const sentinel of ['目标第一行', 'LIBRARY_UNIQUE', 'TASK_UNIQUE']) expect(all.split(sentinel)).toHaveLength(2);
+    expect(all).toContain('上一层');
+    expect(all).toContain('⟦P1⟧');
+  });
+  it('keeps automatic story and empty-library facts when an entry shadows or does not emit them', async () => {
+    const preset = newImagePreset();
+    preset.variables.story = 'LOCAL_VALUE';
+    preset.entries = [{ ...newPromptEntry(), content: '{{story}} {{library}}' }];
+    const options: AutoTagSettings = { enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 0, autoGenerate: false, prompts: prompts() };
+    const messages = await buildAutoTagMessages(context(), 1, options, null, undefined, '', '', autoTagProfile(preset), preset);
+    const all = messages.map(m => m.content).join('\n');
+    expect(all).toContain('目标第一行');
+    expect(all).toContain('currently empty');
+  });
+  it('deduplicates referenced global materials while retaining all automatic sources for disabled entries', async () => {
+    const mocks = [
+      vi.spyOn(promptContext, 'fetchWorldInfo').mockResolvedValue('WORLD_UNIQUE'),
+      vi.spyOn(promptContext, 'fetchCharCard').mockReturnValue('CARD_UNIQUE'),
+      vi.spyOn(promptContext, 'fetchUserPersona').mockReturnValue('PERSONA_UNIQUE'),
+    ];
+    try {
+      const preset = newImagePreset();
+      preset.entries = [{ ...newPromptEntry(), placement: 'after_data', content: '{{character}}\n{{persona}}\n{{世界书触发}}\n{{memory}}\n{{context}}' }];
+      const ctx = context(); ctx.chat[0].is_user = false;
+      const options: AutoTagSettings = { enabled: true, contextMessages: 2, minImages: 0, maxImages: 3, retryCount: 0, autoGenerate: false, prompts: prompts() };
+      for (const enabled of [true, false]) {
+        preset.entries[0].enabled = enabled;
+        const messages = await buildAutoTagMessages(ctx, 1, options, null, undefined, undefined, '', autoTagProfile(preset), preset);
+        const all = messages.map(m => m.content).join('\n');
+        for (const text of ['WORLD_UNIQUE', 'CARD_UNIQUE', 'PERSONA_UNIQUE', '上一层', '柏宝书本次未提供']) {
+          expect(all.split(text)).toHaveLength(2);
+        }
+        expect(all).toContain('目标第一行');
+      }
+    } finally { mocks.forEach(mock => mock.mockRestore()); }
+  });
   it.each([
     ['text', false], ['tool', false], ['text', true], ['tool', true],
   ] as const)('uses the selected %s submission mode for both the contract and checks (manga=%s)', async (output, manga) => {

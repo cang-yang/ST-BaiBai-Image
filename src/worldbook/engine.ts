@@ -142,7 +142,7 @@ export async function scanImageWorldbooks(input: ScanInput): Promise<WorldbookSc
 }
 
 /** Local equivalents of ST anchors; only the independent tag request is changed. */
-export function injectImageWorldbooks(messages: ChatMsg[], result: WorldbookScanResult, characterIndex: number): ChatMsg[] {
+export function injectImageWorldbooks(messages: ChatMsg[], result: WorldbookScanResult, characterIndex: number, trailing: ChatMsg[] = []): ChatMsg[] {
   const out = messages.map(m => ({ ...m }));
   const system = (content: string): ChatMsg => ({ role: 'system', content, source: '生图世界书' });
   const before = [result.worldInfoBefore, ...result.EMEntries.filter(e => e.position === 0).map(e => e.content)].filter(Boolean);
@@ -157,6 +157,8 @@ export function injectImageWorldbooks(messages: ChatMsg[], result: WorldbookScan
     message: { role: (['system', 'user', 'assistant'] as const)[group.role ?? 0] ?? 'system', content: group.entries.join('\n'), source: '生图世界书' },
   }));
   for (const item of depthInsertions.sort((a, b) => b.index - a.index)) out.splice(item.index, 0, item.message);
+  // Closing instructions must not move the story-relative worldbook depth anchors.
+  out.push(...trailing.map(message => ({ ...message })));
   for (const message of out) {
     // DSH caches fixed rules; never cache a per-request outlet expansion there.
     if (message.purpose) continue;

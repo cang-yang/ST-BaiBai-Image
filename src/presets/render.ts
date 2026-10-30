@@ -11,9 +11,13 @@ const aliases: Record<string, string> = {
   '正文': 'story', '上下文': 'context', '世界书触发': 'worldbook',
   '角色启用列表': 'library', '通用角色启用列表': 'library', '用户需求': 'task',
 };
+const materialKeys = new Set(['story', 'context', 'character', 'persona', 'worldbook', 'library', 'memory', 'task']);
 
 export interface RenderedPreset {
   messages: ChatMsg[];
+  beforeData: ChatMsg[];
+  afterData: ChatMsg[];
+  usedMaterials: string[];
   activated: string[];
   warnings: string[];
 }
@@ -27,16 +31,25 @@ export function renderPreset(
   const locals = new Map(Object.entries(preset.variables));
   const warnings = new Set<string>();
   const activated: string[] = [];
-  const messages: ChatMsg[] = [];
+  const beforeData: ChatMsg[] = [], afterData: ChatMsg[] = [];
+  const usedMaterials = new Set<string>();
   const match = (words: string) => words.split(/[,，\n]/).map(s => s.trim()).filter(Boolean).some(word => triggerText.includes(word));
   const get = (key: string, original: string): string => {
     if (locals.has(key)) return locals.get(key)!;
     const canonical = aliases[key] ?? key;
-    if (Object.hasOwn(values, canonical)) return values[canonical];
+    if (Object.hasOwn(values, canonical)) {
+      if (materialKeys.has(canonical) && values[canonical].trim()) usedMaterials.add(canonical);
+      return values[canonical];
+    }
     warnings.add(`未提供变量: ${key}`);
     return original;
   };
-  for (const entry of preset.entries) {
+  // Local assignments follow the actual message order, not interleaved editor order.
+  const ordered = [
+    ...preset.entries.filter(entry => entry.placement !== 'after_data'),
+    ...preset.entries.filter(entry => entry.placement === 'after_data'),
+  ];
+  for (const entry of ordered) {
     if (!entry.enabled) continue;
     if (entry.trigger === 'keywords' && (!match(entry.keywords) || (entry.andKeywords.trim() && !match(entry.andKeywords)))) continue;
     activated.push(entry.name);
@@ -56,9 +69,10 @@ export function renderPreset(
       },
     );
     if (content.includes('【ToolCall引导】')) warnings.add('条目包含旧 ToolCall 引导，请移除该块；工具输出由“输出方式”统一控制');
-    if (content.trim()) messages.push({ role: entry.role, content, source: `预设条目 · ${entry.name}` });
+    if (content.trim()) (entry.placement === 'after_data' ? afterData : beforeData)
+      .push({ role: entry.role, content, source: `预设条目 · ${entry.name}` });
   }
-  return { messages, activated, warnings: [...warnings] };
+  return { messages: [...beforeData, ...afterData], beforeData, afterData, usedMaterials: [...usedMaterials], activated, warnings: [...warnings] };
 }
 
 export function assertPresetReady(result: RenderedPreset): void {

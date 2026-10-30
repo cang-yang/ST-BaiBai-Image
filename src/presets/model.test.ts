@@ -157,6 +157,37 @@ describe('native image presets', () => {
 });
 
 describe('preset rendering', () => {
+  it('roundtrips staged entries and rejects unsupported placements', () => {
+    const preset = newImagePreset();
+    preset.entries[0].placement = 'after_data';
+    const exported = exportPreset(preset);
+    expect(JSON.parse(exported).version).toBe(3);
+    expect(importPresets(exported)[0].entries[0].placement).toBe('after_data');
+    expect(validatePreset(preset).entries[0].placement).toBe('after_data');
+    expect(() => validatePreset({ ...preset, entries: [{ ...preset.entries[0], placement: 'unknown' }] })).toThrow(/位置/);
+  });
+  it('renders in execution order and tracks only actual built-in material reads', () => {
+    const preset = newImagePreset();
+    preset.variables.story = 'LOCAL_STORY';
+    preset.entries = [
+      { ...newPromptEntry(), placement: 'after_data', content: '{@getvar::ready@} {{正文}} {{世界书触发}}' },
+      { ...newPromptEntry(), content: '{@setvar::ready::READY@}{{story}} {{user}}' },
+      { ...newPromptEntry(), enabled: false, content: '{{library}}' },
+      { ...newPromptEntry(), trigger: 'keywords', keywords: 'missing', content: '{{context}}' },
+    ];
+    const result = renderPreset(preset, { story: 'REAL_STORY', worldbook: 'WORLD', user: 'Reader' }, '');
+    expect(result.beforeData.map(m => m.content)).toEqual(['LOCAL_STORY Reader']);
+    expect(result.afterData.map(m => m.content)).toEqual(['READY REAL_STORY WORLD']);
+    expect(result.messages).toEqual([...result.beforeData, ...result.afterData]);
+    expect(result.usedMaterials).toEqual(['story', 'worldbook']);
+    expect(result.warnings).toEqual([]);
+  });
+  it('does not consume materials hidden by local assignments or empty values', () => {
+    const preset = newImagePreset();
+    preset.entries[0].content = '{@setvar::正文::LOCAL@}{{正文}} {{memory}}';
+    const result = renderPreset(preset, { story: 'REAL_STORY', memory: '' }, '');
+    expect(result.usedMaterials).toEqual([]);
+  });
   it('labels each rendered entry without forwarding local provenance to the API', async () => {
     const { wireMessages } = await import('@/api/client');
     const preset = newImagePreset();

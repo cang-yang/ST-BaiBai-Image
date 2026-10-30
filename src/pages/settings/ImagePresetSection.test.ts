@@ -106,6 +106,7 @@ describe('preset section initial setup', () => {
     const preset = newImagePreset();
     preset.format = 'moss_layout';
     preset.entries[0].name = 'A named creative entry';
+    preset.entries[0].placement = 'after_data';
     settings.imagePresets = { activeId: preset.id, presets: [preset], directChannels: [] };
     const originalSetup = ImagePresetSection.setup!;
     const component = {
@@ -121,6 +122,10 @@ describe('preset section initial setup', () => {
     expect(html).toContain('bbi-select-trigger');
     expect(html).toContain('aria-label="选择预设条目"');
     expect(html).toContain('A named creative entry');
+    expect(html).toContain('A named creative entry · 资料后');
+    expect(html).toContain('aria-label="条目插入位置"');
+    expect(html).toContain('资料前 · 任务约定');
+    expect(html).toContain('资料后 · 执行与核对');
     expect(html).toContain('规范与检查');
     expect(html).toContain('输出与变量');
     const creativePanel = html.slice(html.indexOf('id="ip-panel-content"'), html.indexOf('id="ip-panel-rules"'));

@@ -407,8 +407,9 @@ ${characterRule}
     .replace('在图片 tag 中照抄这套外貌', '在各出场格对应的 character.caption 中写入可见外貌')
     .replace('同一张图里这套外貌只写一遍', '跨格重现必须分别绑定可见身份锚点与当前状态；已有辅助框可描述同一角色的局部，不重复整串外貌；有意的多尺度展示明确为同一身份的独立呈现')
     : fixedContract;
+  let rendered: RenderedPreset | undefined;
   if (preset) {
-    const rendered = renderPreset(preset, {
+    rendered = renderPreset(preset, {
       story: preparedTarget.promptText, context: previous,
       character: charCard ? buildCharCardSystem(charCard) : '',
       persona: persona ? buildPersonaSystem(persona) : '',
@@ -419,7 +420,7 @@ ${characterRule}
     }, `${previous}\n${preparedTarget.promptText}`);
     onPresetRendered?.(rendered);
     assertPresetReady(rendered);
-    messages.push(...rendered.messages);
+    messages.push(...rendered.beforeData);
   }
   const letteringContract = layoutOn && preset?.mangaText === 'required' ? `\n\n${MANGA_TEXT_REQUIREMENT}` : '';
   const compositionContract = layoutOn && preset?.mangaComposition === 'expressive'
@@ -439,12 +440,22 @@ ${characterRule}
     content: `${thinking}\n\n${submissionContract}`,
   });
   const characterIndex = messages.length;
-  if (charCard) messages.push({ role: 'system', content: buildCharCardSystem(charCard), source: '角色卡资料' });
-  if (persona) messages.push({ role: 'system', content: buildPersonaSystem(persona), source: '用户人设' });
-  if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo), source: '全局世界书' });
+  const used = new Set(rendered?.usedMaterials);
+  if (charCard && !used.has('character')) messages.push({ role: 'system', content: buildCharCardSystem(charCard), source: '角色卡资料' });
+  if (persona && !used.has('persona')) messages.push({ role: 'system', content: buildPersonaSystem(persona), source: '用户人设' });
+  if (worldInfo && !used.has('worldbook')) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo), source: '全局世界书' });
   const libraryBlock = library?.trim() || `【角色固定外貌库】[system-maintained; currently empty]\n（当前为空，没有任何角色已建档。世界书、角色卡、柏宝书和正文只提供建档依据；未列在本区块中的正式角色必须通过 field:"new" 建档。）`;
-  const taskBlock = taskNote?.trim() ? `${taskNote.trim()}\n\n` : '';
-  const userContent = `${memoryText}\n\n${libraryBlock}\n\n${taskBlock}${previous ? `${previous}\n\n` : ''}--- 目标正文｜${roleLabel(context, targetFloor)} ---\n${preparedTarget.promptText}`;
+  const userContent = [
+    !used.has('memory') && memoryText,
+    !used.has('library') && libraryBlock,
+    !used.has('task') && taskNote?.trim(),
+    !used.has('context') && previous,
+    !used.has('story') && `--- 目标正文｜${roleLabel(context, targetFloor)} ---\n${preparedTarget.promptText}`,
+  ].filter(Boolean).join('\n\n') || '请为本次目标正文生成配图计划。';
   messages.push({ role: 'user', content: userContent, source: '正文、历史与角色资料' });
-  return injectImageWorldbooks(messages, imageWorldbooks, characterIndex);
+  const trailing: ChatMsg[] = rendered?.afterData.length ? [
+    ...rendered.afterData,
+    { role: 'user', content: submissionContract, source: '本次提交方式' },
+  ] : [];
+  return injectImageWorldbooks(messages, imageWorldbooks, characterIndex, trailing);
 }

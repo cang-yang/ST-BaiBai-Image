@@ -7,6 +7,7 @@ export interface PromptEntry {
   enabled: boolean;
   role: ChatMsg['role'];
   content: string;
+  placement?: 'before_data' | 'after_data';
   trigger: 'always' | 'keywords';
   keywords: string;
   andKeywords: string;
@@ -67,9 +68,11 @@ function readPreset(raw: unknown, freshIds: boolean): ImagePromptPreset {
     if (!record(e) || typeof e.content !== 'string') throw new Error(`第 ${index + 1} 个条目缺少文本 content`);
     if (!['system', 'user', 'assistant'].includes(e.role)) throw new Error(`第 ${index + 1} 个条目的角色不支持`);
     if (e.trigger !== undefined && !['always', 'keywords'].includes(e.trigger)) throw new Error(`第 ${index + 1} 个条目的触发方式不支持`);
+    if (e.placement !== undefined && !['before_data', 'after_data'].includes(e.placement)) throw new Error(`第 ${index + 1} 个条目的插入位置不支持`);
     return {
       id: freshIds ? id() : text(e.id) || id(), name: text(e.name, `条目 ${index + 1}`),
       enabled: e.enabled !== false, role: e.role, content: e.content,
+      ...(e.placement ? { placement: e.placement } : {}),
       trigger: e.trigger === 'keywords' ? 'keywords' : 'always',
       keywords: text(e.keywords), andKeywords: text(e.andKeywords),
     };
@@ -152,7 +155,8 @@ export function snapshotPreset(config: ImagePresetSettings): ImagePromptPreset |
 export function exportPreset(preset: ImagePromptPreset): string {
   // Explicit allowlist: no channel, key, host settings or unrelated request profiles.
   const { name, description, output, format, mangaText, mangaComposition, useBackendRules, entries, variables, warnings, rules } = validatePreset(preset);
-  return JSON.stringify({ format: PRESET_FORMAT, version: 2, preset: { name, description, output, ...(format ? { format } : {}), mangaText, mangaComposition, rules: rules ?? legacyRules({}, {}, useBackendRules !== false), entries, variables, warnings } }, null, 2);
+  const version = entries.some(entry => entry.placement === 'after_data') ? 3 : 2;
+  return JSON.stringify({ format: PRESET_FORMAT, version, preset: { name, description, output, ...(format ? { format } : {}), mangaText, mangaComposition, rules: rules ?? legacyRules({}, {}, useBackendRules !== false), entries, variables, warnings } }, null, 2);
 }
 
 export function presetWithMangaRules(base: ImagePromptPreset, name: string, bundle: { spec: string; thinking: string }): ImagePromptPreset {
@@ -187,8 +191,8 @@ export function importPresets(json: string, filename = '导入预设'): ImagePro
   let raw: unknown;
   try { raw = JSON.parse(json); } catch { throw new Error('文件不是有效的 JSON'); }
   if (record(raw) && raw.format === PRESET_FORMAT) {
-    if (raw.version !== 1 && raw.version !== 2) throw new Error(`不支持的预设版本 ${raw.version}`);
-    if (raw.version === 2 && !record(raw.preset?.rules)) throw new Error('v2 预设缺少独立书写规范');
+    if (![1, 2, 3].includes(raw.version)) throw new Error(`不支持的预设版本 ${raw.version}`);
+    if (raw.version >= 2 && !record(raw.preset?.rules)) throw new Error(`v${raw.version} 预设缺少独立书写规范`);
     return [readPreset({ ...raw.preset, rules: raw.preset?.rules ?? legacyRules({}, {}, raw.preset?.useBackendRules !== false) }, true)];
   }
   if (record(raw) && raw.type === 'st_chatu8_request_type_profile') {

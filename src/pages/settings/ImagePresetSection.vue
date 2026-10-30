@@ -83,7 +83,7 @@ const entry = computed(() => draft.value?.entries.find(e => e.id === entryId.val
 const search = ref('');
 const filteredEntries = computed(() => draft.value?.entries.filter(e => `${e.name} ${e.content}`.toLowerCase().includes(search.value.toLowerCase())) ?? []);
 const entryOptions = computed(() => filteredEntries.value.map(item => ({
-  value: item.id, label: `${item.enabled ? '' : '[停用] '}${item.name}`,
+  value: item.id, label: `${item.enabled ? '' : '[停用] '}${item.name}${item.placement === 'after_data' ? ' · 资料后' : ''}`,
 })));
 watch(filteredEntries, items => {
   if (!items.some(item => item.id === entryId.value)) entryId.value = items[0]?.id ?? '';
@@ -323,7 +323,8 @@ async function inspect(send: boolean): Promise<void> {
         </div>
         <label>条目名称<input v-model="entry.name" class="bbi-input" aria-label="预设条目名称" /></label>
         <label>提示词<textarea v-model="entry.content" class="bbi-input ip-text" rows="8" aria-label="预设条目提示词" spellcheck="false" /></label>
-        <details><summary>条目条件与消息角色</summary>
+        <details><summary>插入位置、条件与角色</summary>
+          <label>插入位置<select :value="entry.placement ?? 'before_data'" class="bbi-input" aria-label="条目插入位置" @change="entry.placement = ($event.target as HTMLSelectElement).value as 'before_data' | 'after_data'"><option value="before_data">资料前 · 任务约定</option><option value="after_data">资料后 · 执行与核对</option></select></label>
           <label>何时使用<select v-model="entry.trigger" class="bbi-input"><option value="always">始终使用</option><option value="keywords">正文或上下文出现关键词时</option></select></label>
           <template v-if="entry.trigger === 'keywords'">
             <label>任一关键词<input v-model="entry.keywords" class="bbi-input" placeholder="逗号分隔" /></label>
